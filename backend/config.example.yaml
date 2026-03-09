@@ -1,0 +1,130 @@
+app:
+  name: "AI Podcast - Health Science Video Generator"
+  version: "1.0.0"
+  debug: false
+  host: "0.0.0.0"
+  port: 8000
+  log_level: "info"
+  cors_origins:
+    - "http://localhost:5173"
+    - "http://localhost:3000"
+
+database:
+  url: "sqlite+aiosqlite:///./data/db/ai_podcast.db"
+  echo: false
+
+storage:
+  base_dir: "./data"
+  output_dir: "./data/output"
+  temp_dir: "./data/temp"
+  assets_dir: "./data/assets"
+  max_temp_age_hours: 24
+
+output:
+  default_aspect_ratio: "16:9"
+  default_template: "slideshow"
+  default_format: "mp4"
+  naming_rule: "{date}_{topic}_{aspect_ratio}"
+  video_quality:
+    crf: 23
+    preset: "medium"
+    codec: "libx264"
+    audio_codec: "aac"
+    audio_bitrate: "192k"
+    fps: 30
+
+subtitles:
+  enabled: true
+  font_family: "Noto Sans CJK SC"
+  font_size: 24
+  font_color: "#FFFFFF"
+  outline_color: "#000000"
+  outline_width: 2
+  position: "bottom"
+  max_chars_per_line: 20
+  max_lines: 2
+  margin_bottom: 50
+
+content:
+  default_language: "zh-CN"
+  article:
+    min_words: 300
+    max_words: 1500
+    default_style: "science_popularization"
+  segments:
+    min_per_article: 3
+    max_per_article: 15
+    split_method: "paragraph"
+  script:
+    default_style: "conversational"
+
+sources:
+  rss:
+    fetch_interval_seconds: 3600
+    max_items_per_feed: 20
+    auto_fetch_enabled: false
+  scraping:
+    user_agent: "AI-Podcast-Bot/1.0"
+    timeout_seconds: 30
+    respect_robots_txt: true
+
+providers:
+  defaults:
+    text: "claude"
+    image: "dalle"
+    tts: "openai_tts"
+
+tasks:
+  max_concurrent: 3
+  retry_attempts: 2
+  retry_delay_seconds: 5
+  task_timeout_seconds: 300
+
+prompts:
+  article_system: |
+    你是一位专业的健康科普作家,擅长将复杂的医学知识转化为通俗易懂的科普文章。
+    你的文章应该:
+    - 科学准确,引用可靠的医学来源
+    - 通俗易懂,避免过多专业术语
+    - 结构清晰,分段合理
+    - 适合大众阅读的健康科普内容
+
+  article_user: |
+    请围绕以下主题撰写一篇健康科普文章:
+    主题: {topic}
+
+    要求:
+    - 字数: {min_words}-{max_words}字
+    - 风格: {style}
+    - 语言: {language}
+    - 分成3-8个自然段落
+    - 包含实用的健康建议
+
+  script_system: |
+    你是一位专业的口播稿撰写专家,擅长将科普文章改写为适合口播的稿件。
+
+  script_user: |
+    请将以下科普文章改写为口播稿:
+
+    {article}
+
+    要求:
+    - 口语化表达,适合朗读
+    - 保持专业性但更加亲切
+    - 适当添加过渡词和语气词
+    - 风格: {style}
+
+  image_prompt_system: |
+    你是一位AI绘画提示词专家。请为每个段落生成适合的图片描述提示词。
+
+  image_prompt_user: |
+    请为以下每个段落生成一个用于AI绘图的英文提示词:
+
+    {segments}
+
+    要求:
+    - 每个提示词独立一行
+    - 使用英文
+    - 风格: 专业医学科普插图,现代扁平风格
+    - 避免出现人脸特写
+    - 用 [PROMPT_1], [PROMPT_2]... 标记每个提示词

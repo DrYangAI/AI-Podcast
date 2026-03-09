@@ -1,0 +1,38 @@
+# Dependencies
+frontend/node_modules/
+backend/venv/
+
+# Data & generated files
+backend/data/
+
+# Third-party tools
+Fooocus/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environment
+.env
+.env.local
+*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build output
+frontend/dist/
+
+# Claude Code
+.claude/

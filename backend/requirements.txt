@@ -1,0 +1,40 @@
+# Web framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+websockets>=12.0
+
+# Database
+sqlalchemy[asyncio]>=2.0.23
+aiosqlite>=0.20.0
+alembic>=1.13.0
+
+# Configuration
+pydantic>=2.12.0
+pydantic-settings>=2.1.0
+pyyaml>=6.0.0
+
+# HTTP client
+httpx>=0.27.0
+
+# Image processing
+Pillow>=10.1.0
+
+# AI Providers
+anthropic>=0.39.0
+openai>=1.50.0
+
+# RSS & Scraping
+feedparser>=6.0.0
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+
+# Task queue
+huey>=2.5.0
+
+# Security
+cryptography>=42.0.0
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
