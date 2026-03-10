@@ -85,6 +85,7 @@ class DoubaoTTSProvider(TTSProvider):
         super().__init__(api_key, api_base_url, model_id, config)
         self.app_id = self.config.get("app_id", "")
         self.resource_id = self.config.get("resource_id", "seed-tts-1.0")
+        self.icl_resource_id = self.config.get("icl_resource_id", "")
 
     def _build_text_frame(self, payload: dict) -> bytes:
         """构建 SendText 二进制帧."""
@@ -188,15 +189,29 @@ class DoubaoTTSProvider(TTSProvider):
 
     async def synthesize(self, request: TTSRequest,
                          output_path: Path = Path("")) -> TTSResponse:
-        """合成语音."""
+        """合成语音（支持标准模式和 ICL 声音复刻模式）.
+
+        ICL 模式: 需要先通过 voice_clone 训练接口注册音色，获得 speaker_id，
+        然后在此处通过 speaker_id + ICL resource_id 进行合成。
+        """
         ws_url = self.api_base_url or self.metadata.default_api_base
         voice_id = request.voice_id or "zh_female_shuangkuaisisi_moon_bigtts"
 
-        # 构建请求 headers
+        # 判断是否使用 ICL（声音复刻）模式
+        use_icl = request.use_icl
+
+        # 构建请求 headers — ICL 模式使用 ICL 资源 ID
+        resource_id = self.resource_id
+        if use_icl:
+            if self.icl_resource_id:
+                resource_id = self.icl_resource_id
+            elif "icl" not in resource_id:
+                resource_id = "seed-icl-1.0"
+
         headers = {
             "X-Api-App-Id": self.app_id,
             "X-Api-Access-Key": self.api_key,
-            "X-Api-Resource-Id": self.resource_id,
+            "X-Api-Resource-Id": resource_id,
             "X-Api-Request-Id": str(uuid.uuid4()),
         }
 
@@ -208,23 +223,23 @@ class DoubaoTTSProvider(TTSProvider):
                 "speaker": voice_id,
                 "audio_params": {
                     "format": request.output_format or "mp3",
-                    "sample_rate": request.sample_rate if hasattr(request, 'sample_rate') and request.sample_rate else 24000,
+                    "sample_rate": 24000,
                 },
             }
         }
 
         # 添加语速设置
         if request.speed != 1.0:
-            # 将 speed 1.0 转换为 0, 范围 [-50, 100]
             speech_rate = int((request.speed - 1.0) * 100)
             payload["req_params"]["audio_params"]["speech_rate"] = speech_rate
 
-        # 添加情感设置 (如果配置了)
-        emotion = self.config.get("emotion")
-        if emotion:
-            payload["req_params"]["audio_params"]["emotion"] = emotion
-            emotion_scale = self.config.get("emotion_scale", 4)
-            payload["req_params"]["audio_params"]["emotion_scale"] = emotion_scale
+        # 添加情感设置 (仅标准模式)
+        if not use_icl:
+            emotion = self.config.get("emotion")
+            if emotion:
+                payload["req_params"]["audio_params"]["emotion"] = emotion
+                emotion_scale = self.config.get("emotion_scale", 4)
+                payload["req_params"]["audio_params"]["emotion_scale"] = emotion_scale
 
         audio_chunks: list[bytes] = []
         session_finished = False

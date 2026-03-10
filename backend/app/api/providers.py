@@ -14,6 +14,7 @@ from ..schemas.provider import (
     ProviderConfigCreate, ProviderConfigUpdate, ProviderConfigResponse,
     ProviderTypeInfo, ProviderTestResult,
 )
+from ..schemas.voice import PresetVoice
 
 router = APIRouter()
 
@@ -118,6 +119,43 @@ async def delete_provider(provider_id: str, db: AsyncSession = Depends(get_db)):
     if not provider:
         raise HTTPException(status_code=404, detail="Provider not found")
     await db.delete(provider)
+
+
+@router.get("/{provider_id}/voices", response_model=list[PresetVoice])
+async def list_provider_voices(provider_id: str, db: AsyncSession = Depends(get_db)):
+    """List available preset voices for a TTS provider."""
+    result = await db.execute(select(ProviderConfig).where(ProviderConfig.id == provider_id))
+    provider_config = result.scalar_one_or_none()
+    if not provider_config:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    if provider_config.provider_type != "tts":
+        raise HTTPException(status_code=400, detail="This provider is not a TTS provider")
+
+    try:
+        provider_type = ProviderType(provider_config.provider_type)
+        config = json.loads(provider_config.config_json) if provider_config.config_json else None
+        provider = ProviderRegistry.instantiate(
+            provider_type=provider_type,
+            key=provider_config.provider_key,
+            api_key=provider_config.api_key or "",
+            api_base_url=provider_config.api_base_url or "",
+            model_id=provider_config.model_id or "",
+            config=config,
+        )
+        voices = await provider.list_voices()
+        return [
+            PresetVoice(
+                id=v["id"],
+                name=v.get("name", v["id"]),
+                gender=v.get("gender"),
+                language=v.get("language"),
+                provider_key=provider_config.provider_key,
+            )
+            for v in voices
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取声音列表失败: {e}")
 
 
 @router.post("/{provider_id}/test", response_model=ProviderTestResult)

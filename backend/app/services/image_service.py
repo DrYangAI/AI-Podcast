@@ -46,6 +46,7 @@ class ImageService:
                 await self._generate_image_prompts(
                     db, segments, text_config, settings,
                     language=image_prompt_language,
+                    aspect_ratio=project.aspect_ratio,
                 )
 
             # Get image provider
@@ -145,6 +146,39 @@ class ImageService:
                     db.add(image_asset)
 
             await db.commit()
+
+    async def generate_prompts_only(self, project_id: str,
+                                      provider_overrides: dict[str, str] | None = None):
+        """Generate image prompts without generating images."""
+        settings = get_settings()
+
+        async with async_session_factory() as db:
+            project = await db.get(Project, project_id)
+            if not project:
+                raise ValueError(f"Project {project_id} not found")
+
+            result = await db.execute(
+                select(Segment)
+                .where(Segment.project_id == project_id)
+                .order_by(Segment.segment_order)
+            )
+            segments = list(result.scalars().all())
+            if not segments:
+                raise ValueError(f"No segments found for project {project_id}")
+
+            image_prompt_language = getattr(project, 'image_prompt_language', 'en') or 'en'
+            text_config = await self._get_provider(db, "text", provider_overrides)
+            if not text_config:
+                raise ValueError("No text provider configured")
+
+            await self._generate_image_prompts(
+                db, segments, text_config, settings,
+                language=image_prompt_language,
+                aspect_ratio=project.aspect_ratio,
+            )
+            await db.commit()
+
+            return [{"segment_id": s.id, "image_prompt": s.image_prompt} for s in segments]
 
     async def regenerate_single_image(self, project_id: str, segment_id: str,
                                         custom_prompt: str | None = None):
@@ -269,7 +303,8 @@ class ImageService:
             await db.commit()
 
     async def _generate_image_prompts(self, db, segments, text_config, settings,
-                                        language: str = "en"):
+                                        language: str = "en",
+                                        aspect_ratio: str = "16:9"):
         """Use text provider to generate image prompts for segments."""
         api_key = text_config.api_key
         if not api_key:
@@ -290,7 +325,9 @@ class ImageService:
         )
 
         segment_texts = [s.content for s in segments]
-        prompts = await text_provider.generate_image_prompts(segment_texts, language=language)
+        prompts = await text_provider.generate_image_prompts(
+            segment_texts, language=language, aspect_ratio=aspect_ratio,
+        )
 
         for segment, prompt in zip(segments, prompts):
             segment.image_prompt = prompt

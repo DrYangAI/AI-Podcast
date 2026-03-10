@@ -14,6 +14,25 @@ from ..services.pipeline_service import PipelineService
 router = APIRouter()
 
 
+async def _ensure_portrait_step(db: AsyncSession, project_id: str) -> None:
+    """旧项目兼容：若缺少 portrait_composite 步骤则自动补充。"""
+    result = await db.execute(
+        select(PipelineStep)
+        .where(PipelineStep.project_id == project_id, PipelineStep.step_name == "portrait_composite")
+    )
+    if result.scalar_one_or_none() is None:
+        project = await db.get(Project, project_id)
+        portrait_enabled = getattr(project, "portrait_composite_enabled", True) if project else True
+        new_step = PipelineStep(
+            project_id=project_id,
+            step_name="portrait_composite",
+            step_order=7,
+            status="pending" if portrait_enabled else "skipped",
+        )
+        db.add(new_step)
+        await db.commit()
+
+
 @router.get("/projects/{project_id}/pipeline", response_model=list[PipelineStepResponse])
 async def get_pipeline_status(project_id: str, db: AsyncSession = Depends(get_db)):
     """Get all pipeline step statuses for a project."""
@@ -22,10 +41,23 @@ async def get_pipeline_status(project_id: str, db: AsyncSession = Depends(get_db
         .where(PipelineStep.project_id == project_id)
         .order_by(PipelineStep.step_order)
     )
-    steps = result.scalars().all()
+    steps = list(result.scalars().all())
     if not steps:
         raise HTTPException(status_code=404, detail="Project not found")
-    return [PipelineStepResponse.model_validate(s) for s in steps]
+
+    # 旧项目兼容
+    step_names = {s.step_name for s in steps}
+    if "portrait_composite" not in step_names:
+        await _ensure_portrait_step(db, project_id)
+        # 重新查询以获取最新数据
+        result = await db.execute(
+            select(PipelineStep)
+            .where(PipelineStep.project_id == project_id)
+            .order_by(PipelineStep.step_order)
+        )
+        steps = list(result.scalars().all())
+
+    return [PipelineStepResponse.model_validate(s) for s in sorted(steps, key=lambda s: s.step_order)]
 
 
 @router.post("/projects/{project_id}/pipeline/run", status_code=202)
@@ -57,6 +89,10 @@ async def run_single_step(
     db: AsyncSession = Depends(get_db),
 ):
     """Run a single pipeline step."""
+    # 旧项目兼容：确保 portrait_composite 步骤存在
+    if step_name == "portrait_composite":
+        await _ensure_portrait_step(db, project_id)
+
     result = await db.execute(
         select(PipelineStep)
         .where(PipelineStep.project_id == project_id, PipelineStep.step_name == step_name)
@@ -79,6 +115,10 @@ async def retry_step(
     db: AsyncSession = Depends(get_db),
 ):
     """Retry a failed step."""
+    # 旧项目兼容
+    if step_name == "portrait_composite":
+        await _ensure_portrait_step(db, project_id)
+
     result = await db.execute(
         select(PipelineStep)
         .where(PipelineStep.project_id == project_id, PipelineStep.step_name == step_name)

@@ -40,4 +40,5 @@ class PipelineStep(Base):
         "script_generation",
         "tts_audio",
         "video_composition",
+        "portrait_composite",
     ]

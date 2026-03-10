@@ -3,6 +3,7 @@ import { computed, ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useProjectStore } from '../stores/project'
+import { projectsApi } from '../api/projects'
 import { pipelineApi } from '../api/pipeline'
 import { providersApi } from '../api/providers'
 import type { ProviderConfig } from '../types/provider'
@@ -23,6 +24,7 @@ const stepLabels: Record<string, string> = {
   script_generation: '口播稿生成',
   tts_audio: '语音合成',
   video_composition: '视频合成',
+  portrait_composite: '竖屏合成',
 }
 
 const stepRoutes: Record<string, string> = {
@@ -32,6 +34,7 @@ const stepRoutes: Record<string, string> = {
   script_generation: 'project-script',
   tts_audio: 'project-audio',
   video_composition: 'project-video',
+  portrait_composite: 'project-video',
 }
 
 const stepProviderType: Record<string, string> = {
@@ -46,7 +49,28 @@ function getStepColor(status: string) {
     case 'completed': return '#67c23a'
     case 'in_progress': return '#e6a23c'
     case 'failed': return '#f56c6c'
+    case 'skipped': return '#909399'
     default: return '#c0c4cc'
+  }
+}
+
+function getStatusLabel(status: string) {
+  switch (status) {
+    case 'completed': return '已完成'
+    case 'in_progress': return '进行中'
+    case 'failed': return '失败'
+    case 'skipped': return '已跳过'
+    default: return '待执行'
+  }
+}
+
+function getStatusType(status: string) {
+  switch (status) {
+    case 'completed': return 'success'
+    case 'in_progress': return 'warning'
+    case 'failed': return 'danger'
+    case 'skipped': return 'info'
+    default: return 'info'
   }
 }
 
@@ -118,6 +142,16 @@ function buildOverrides(): Record<string, string> {
   }
   return overrides
 }
+
+async function togglePortraitComposite(enabled: boolean) {
+  try {
+    await projectsApi.update(projectId.value, { portrait_composite_enabled: enabled } as any)
+    await store.loadProject(projectId.value)
+    ElMessage.success(enabled ? '竖屏合成已启用' : '竖屏合成已禁用')
+  } catch {
+    ElMessage.error('更新失败')
+  }
+}
 </script>
 
 <template>
@@ -134,7 +168,7 @@ function buildOverrides(): Record<string, string> {
         v-for="step in store.pipelineSteps"
         :key="step.id"
         :color="getStepColor(step.status)"
-        :hollow="step.status === 'pending'"
+        :hollow="step.status === 'pending' || step.status === 'skipped'"
         size="large"
       >
         <el-card shadow="hover" class="step-card">
@@ -142,11 +176,24 @@ function buildOverrides(): Record<string, string> {
             <div style="flex: 1;">
               <strong>{{ stepLabels[step.step_name] || step.step_name }}</strong>
               <el-tag
-                :type="step.status === 'completed' ? 'success' : step.status === 'failed' ? 'danger' : step.status === 'in_progress' ? 'warning' : 'info'"
+                :type="getStatusType(step.status)"
                 size="small" style="margin-left: 8px;"
               >
-                {{ step.status === 'completed' ? '已完成' : step.status === 'in_progress' ? '进行中' : step.status === 'failed' ? '失败' : '待执行' }}
+                {{ getStatusLabel(step.status) }}
               </el-tag>
+              <!-- 竖屏合成步骤：启用/禁用开关 -->
+              <el-switch
+                v-if="step.step_name === 'portrait_composite'"
+                :model-value="store.currentProject?.portrait_composite_enabled ?? true"
+                @change="togglePortraitComposite"
+                size="small"
+                style="margin-left: 12px;"
+                active-text="启用"
+                inactive-text="禁用"
+              />
+              <div v-if="step.step_name === 'portrait_composite'" style="margin-top: 4px;">
+                <el-text type="info" size="small">将 16:9 横屏视频合成为 9:16 竖屏，标题在上、字幕在下</el-text>
+              </div>
               <div v-if="step.error_message" style="margin-top: 4px;">
                 <el-text type="danger" size="small">{{ step.error_message }}</el-text>
               </div>

@@ -19,6 +19,16 @@ export interface Project {
   subtitle_outline_width: number
   subtitle_position: string
   subtitle_margin_bottom: number
+  portrait_composite_enabled: boolean
+  portrait_bg_color: string
+  portrait_title_text: string | null
+  portrait_title_font_size: number
+  portrait_title_y: number
+  portrait_video_y: number
+  portrait_subtitle_font_size: number
+  portrait_subtitle_margin_v: number
+  tts_voice_id: string | null
+  tts_voice_clone_id: string | null
   status: string
   created_at: string
   updated_at: string
@@ -94,6 +104,7 @@ export interface VideoOutput {
   resolution: string | null
   file_size: number | null
   has_subtitles: boolean
+  video_type: string
   status: string
   created_at: string
 }

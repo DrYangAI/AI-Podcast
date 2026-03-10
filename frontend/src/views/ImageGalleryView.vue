@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { onMounted, computed, ref, reactive } from 'vue'
+import { onMounted, onUnmounted, computed, ref, reactive } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useProjectStore } from '../stores/project'
 import { pipelineApi } from '../api/pipeline'
 import { projectsApi } from '../api/projects'
@@ -10,8 +10,10 @@ import { utilsApi } from '../api/utils'
 const route = useRoute()
 const store = useProjectStore()
 const projectId = computed(() => route.params.id as string)
-const generating = ref<string | null>(null)
+const generatingSet = ref<Set<string>>(new Set())
 const settingsVisible = ref(false)
+const generatingPrompts = ref(false)
+let imagePollingTimer: ReturnType<typeof setInterval> | null = null
 
 // Per-image prompt editing
 const editingPrompt = ref<{ segmentId: string; prompt: string } | null>(null)
@@ -26,13 +28,27 @@ const imageSettings = reactive({
 
 const resolutionPresets = [
   { label: '跟随宽高比（默认）', width: null, height: null },
-  { label: '1024 × 1024', width: 1024, height: 1024 },
-  { label: '1920 × 1080', width: 1920, height: 1080 },
-  { label: '1080 × 1920', width: 1080, height: 1920 },
-  { label: '2560 × 1440', width: 2560, height: 1440 },
-  { label: '1440 × 2560', width: 1440, height: 2560 },
-  { label: '1920 × 1920', width: 1920, height: 1920 },
+  { label: '2560 × 1440（16:9）', width: 2560, height: 1440 },
+  { label: '1440 × 2560（9:16）', width: 1440, height: 2560 },
+  { label: '1920 × 1920（1:1）', width: 1920, height: 1920 },
 ]
+
+const MIN_PIXELS = 3686400  // 豆包 Seedream 最低像素要求
+
+const pixelCount = computed(() => {
+  const w = imageSettings.image_width
+  const h = imageSettings.image_height
+  if (!w || !h) return null
+  return w * h
+})
+
+const pixelWarning = computed(() => {
+  if (pixelCount.value === null) return ''
+  if (pixelCount.value < MIN_PIXELS) {
+    return `当前 ${(pixelCount.value / 10000).toFixed(0)} 万像素，低于豆包 Seedream 最低要求 ${(MIN_PIXELS / 10000).toFixed(0)} 万像素，生成将失败`
+  }
+  return ''
+})
 
 const currentPreset = computed(() => {
   const w = imageSettings.image_width
@@ -56,16 +72,78 @@ onMounted(async () => {
     imageSettings.image_style = store.currentProject.image_style || 'natural'
     imageSettings.image_negative_prompt = store.currentProject.image_negative_prompt || ''
   }
+  // Resume polling if any images are in "generating" state
+  const hasGenerating = store.images.some(img => img.status === 'generating')
+  if (hasGenerating) {
+    store.images.filter(img => img.status === 'generating').forEach(img => {
+      generatingSet.value.add(img.segment_id)
+    })
+    startImagePolling()
+  }
 })
+
+onUnmounted(() => {
+  stopImagePolling()
+})
+
+function startImagePolling() {
+  if (imagePollingTimer) return
+  imagePollingTimer = setInterval(async () => {
+    await store.loadImages(projectId.value)
+    // Check each tracked segment
+    const finished: string[] = []
+    for (const segId of generatingSet.value) {
+      const img = store.images.find(i => i.segment_id === segId)
+      if (!img || img.status === 'completed') {
+        finished.push(segId)
+        const seg = store.segments.find(s => s.id === segId)
+        const label = seg ? `段落 ${seg.segment_order + 1}` : ''
+        ElMessage.success(`${label} 图片生成完成`)
+      } else if (img.status === 'failed') {
+        finished.push(segId)
+        const seg = store.segments.find(s => s.id === segId)
+        const label = seg ? `段落 ${seg.segment_order + 1}` : ''
+        ElMessage.error(`${label} 图片生成失败`)
+      }
+    }
+    finished.forEach(id => generatingSet.value.delete(id))
+    if (generatingSet.value.size === 0) {
+      stopImagePolling()
+    }
+  }, 3000)
+}
+
+function stopImagePolling() {
+  if (imagePollingTimer) {
+    clearInterval(imagePollingTimer)
+    imagePollingTimer = null
+  }
+}
 
 function getImageForSegment(segmentId: string) {
   return store.images.find(img => img.segment_id === segmentId)
 }
 
+async function handleGeneratePrompts() {
+  generatingPrompts.value = true
+  try {
+    await projectsApi.generatePrompts(projectId.value)
+    await store.loadSegments(projectId.value)
+    ElMessage.success('提示词已生成，请检查后再生成图片')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '提示词生成失败')
+  } finally {
+    generatingPrompts.value = false
+  }
+}
+
 async function handleGenerateAll() {
   try {
     await pipelineApi.runStep(projectId.value, 'image_generation')
-    ElMessage.success('图片生成已启动')
+    ElMessage.success('全部图片生成已启动')
+    // Track all segments as generating
+    store.segments.forEach(s => generatingSet.value.add(s.id))
+    startImagePolling()
     store.startPolling(projectId.value)
   } catch {
     ElMessage.error('启动失败')
@@ -73,15 +151,16 @@ async function handleGenerateAll() {
 }
 
 async function handleRegenerateOne(segmentId: string, customPrompt?: string) {
-  generating.value = segmentId
+  generatingSet.value.add(segmentId)
   try {
     await projectsApi.regenerateSegmentImage(projectId.value, segmentId, customPrompt)
-    ElMessage.success('图片重新生成已启动')
-    store.startPolling(projectId.value)
+    const seg = store.segments.find(s => s.id === segmentId)
+    const label = seg ? `段落 ${seg.segment_order + 1}` : ''
+    ElMessage.info(`${label} 图片生成中...`)
+    startImagePolling()
   } catch (e: any) {
+    generatingSet.value.delete(segmentId)
     ElMessage.error(e?.response?.data?.detail || '生成失败')
-  } finally {
-    generating.value = null
   }
 }
 
@@ -142,7 +221,7 @@ function applyPreset(preset: typeof resolutionPresets[0]) {
   imageSettings.image_height = preset.height
 }
 
-async function saveSettings() {
+async function doSaveSettings() {
   try {
     await projectsApi.update(projectId.value, {
       image_width: imageSettings.image_width,
@@ -158,6 +237,23 @@ async function saveSettings() {
     ElMessage.error('保存失败')
   }
 }
+
+async function saveSettings() {
+  if (pixelWarning.value) {
+    try {
+      await ElMessageBox.confirm(
+        pixelWarning.value + '。确定要保存吗？',
+        '分辨率警告',
+        { confirmButtonText: '仍然保存', cancelButtonText: '取消', type: 'warning' }
+      )
+      await doSaveSettings()
+    } catch {
+      // User cancelled
+    }
+  } else {
+    await doSaveSettings()
+  }
+}
 </script>
 
 <template>
@@ -171,6 +267,9 @@ async function saveSettings() {
         <el-button v-if="store.images.length > 0" @click="utilsApi.openFolder(store.images[0].file_path)" size="small">
           <el-icon><FolderOpened /></el-icon> 打开目录
         </el-button>
+        <el-button @click="handleGeneratePrompts" :loading="generatingPrompts">
+          <el-icon><MagicStick /></el-icon> {{ store.segments.some(s => s.image_prompt) ? '重新生成提示词' : '生成提示词' }}
+        </el-button>
         <el-button type="primary" @click="handleGenerateAll">
           <el-icon><PictureFilled /></el-icon> {{ store.images.length > 0 ? '重新生成全部图片' : '生成全部图片' }}
         </el-button>
@@ -183,21 +282,22 @@ async function saveSettings() {
           <template #header>
             <span>段落 {{ segment.segment_order + 1 }}</span>
           </template>
-          <div v-if="getImageForSegment(segment.id)" style="text-align: center;">
+          <div v-if="getImageForSegment(segment.id) || generatingSet.has(segment.id)" style="text-align: center;">
             <el-image
-              v-if="getImageForSegment(segment.id)?.status === 'completed'"
+              v-if="getImageForSegment(segment.id)?.status === 'completed' && !generatingSet.has(segment.id)"
               :src="'/' + getImageForSegment(segment.id)?.file_path"
               :preview-src-list="['/' + getImageForSegment(segment.id)?.file_path]"
               fit="cover"
               style="width: 100%; height: 150px; border-radius: 4px; margin-bottom: 8px;"
             />
-            <div v-else-if="getImageForSegment(segment.id)?.status === 'generating'" style="height: 150px; display: flex; align-items: center; justify-content: center;">
+            <div v-else-if="generatingSet.has(segment.id) || getImageForSegment(segment.id)?.status === 'generating'" style="height: 150px; display: flex; flex-direction: column; align-items: center; justify-content: center;">
               <el-icon class="is-loading" :size="32" style="color: #e6a23c;"><Loading /></el-icon>
+              <span style="font-size: 12px; color: #909399; margin-top: 8px;">AI 生成中，请稍候...</span>
             </div>
-            <el-tag v-if="getImageForSegment(segment.id)?.status === 'completed'" type="success" size="small">
+            <el-tag v-if="getImageForSegment(segment.id)?.status === 'completed' && !generatingSet.has(segment.id)" type="success" size="small">
               已生成
             </el-tag>
-            <el-tag v-else-if="getImageForSegment(segment.id)?.status === 'generating'" type="warning" size="small">
+            <el-tag v-else-if="generatingSet.has(segment.id) || getImageForSegment(segment.id)?.status === 'generating'" type="warning" size="small">
               生成中
             </el-tag>
             <el-tag v-else type="danger" size="small">失败</el-tag>
@@ -218,7 +318,7 @@ async function saveSettings() {
           <div style="display: flex; justify-content: center; gap: 4px; margin-top: 8px; flex-wrap: wrap;">
             <el-button
               text type="primary" size="small"
-              :loading="generating === segment.id"
+              :loading="generatingSet.has(segment.id)"
               @click="handleRegenerateOne(segment.id)"
             >
               <el-icon><RefreshRight /></el-icon> 重新生成
@@ -243,12 +343,23 @@ async function saveSettings() {
           </div>
 
           <!-- Content preview -->
-          <el-text size="small" style="display: block; margin-top: 8px;" :line-clamp="2">
+          <el-text size="small" style="display: block; margin-top: 8px; color: #606266;" :line-clamp="2">
             {{ segment.content.substring(0, 60) }}...
           </el-text>
-          <el-text v-if="segment.image_prompt || getImageForSegment(segment.id)?.prompt_used" type="info" size="small" style="display: block; margin-top: 4px;">
-            Prompt: {{ (segment.image_prompt || getImageForSegment(segment.id)?.prompt_used)?.substring(0, 80) }}...
-          </el-text>
+          <div v-if="segment.image_prompt || getImageForSegment(segment.id)?.prompt_used"
+            style="margin-top: 6px; padding: 6px 8px; background: #f0f9eb; border-radius: 4px; border-left: 3px solid #67c23a;">
+            <el-text size="small" style="display: block; color: #67c23a; font-weight: 500; margin-bottom: 2px;">
+              提示词
+            </el-text>
+            <el-text size="small" style="display: block; color: #606266;" :line-clamp="3">
+              {{ segment.image_prompt || getImageForSegment(segment.id)?.prompt_used }}
+            </el-text>
+          </div>
+          <div v-else style="margin-top: 6px; padding: 6px 8px; background: #fdf6ec; border-radius: 4px; border-left: 3px solid #e6a23c;">
+            <el-text size="small" style="color: #e6a23c;">
+              暂无提示词，点击上方"生成提示词"按钮
+            </el-text>
+          </div>
         </el-card>
       </el-col>
     </el-row>
@@ -316,7 +427,13 @@ async function saveSettings() {
               style="flex: 1;"
             />
           </div>
-          <div style="font-size: 12px; color: #909399; margin-top: 4px;">
+          <div v-if="pixelWarning" style="font-size: 12px; color: #f56c6c; margin-top: 4px;">
+            {{ pixelWarning }}
+          </div>
+          <div v-else-if="pixelCount" style="font-size: 12px; color: #67c23a; margin-top: 4px;">
+            当前 {{ (pixelCount / 10000).toFixed(0) }} 万像素 ✓
+          </div>
+          <div v-else style="font-size: 12px; color: #909399; margin-top: 4px;">
             留空则根据项目宽高比自动计算
           </div>
         </el-form-item>

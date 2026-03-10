@@ -24,6 +24,16 @@ class ProjectCreate(BaseModel):
     subtitle_outline_width: int = Field(default=1)
     subtitle_position: str = Field(default="bottom")
     subtitle_margin_bottom: int = Field(default=30)
+    portrait_composite_enabled: bool = Field(default=True)
+    portrait_bg_color: str = Field(default="#1A1A2E")
+    portrait_title_text: str | None = None
+    portrait_title_font_size: int = Field(default=36)
+    portrait_title_y: int = Field(default=82)
+    portrait_video_y: int = Field(default=480)
+    portrait_subtitle_font_size: int = Field(default=38)
+    portrait_subtitle_margin_v: int = Field(default=550)
+    tts_voice_id: str | None = None
+    tts_voice_clone_id: str | None = None
 
 
 class ProjectUpdate(BaseModel):
@@ -44,6 +54,16 @@ class ProjectUpdate(BaseModel):
     subtitle_outline_width: int | None = None
     subtitle_position: str | None = None
     subtitle_margin_bottom: int | None = None
+    portrait_composite_enabled: bool | None = None
+    portrait_bg_color: str | None = None
+    portrait_title_text: str | None = None
+    portrait_title_font_size: int | None = None
+    portrait_title_y: int | None = None
+    portrait_video_y: int | None = None
+    portrait_subtitle_font_size: int | None = None
+    portrait_subtitle_margin_v: int | None = None
+    tts_voice_id: str | None = None
+    tts_voice_clone_id: str | None = None
 
 
 class ProjectResponse(BaseModel):
@@ -67,6 +87,16 @@ class ProjectResponse(BaseModel):
     subtitle_outline_width: int = 1
     subtitle_position: str = "bottom"
     subtitle_margin_bottom: int = 30
+    portrait_composite_enabled: bool = True
+    portrait_bg_color: str = "#1A1A2E"
+    portrait_title_text: str | None = None
+    portrait_title_font_size: int = 36
+    portrait_title_y: int = 82
+    portrait_video_y: int = 480
+    portrait_subtitle_font_size: int = 38
+    portrait_subtitle_margin_v: int = 550
+    tts_voice_id: str | None = None
+    tts_voice_clone_id: str | None = None
     status: str
     created_at: datetime
     updated_at: datetime
@@ -183,6 +213,7 @@ class VideoOutputResponse(BaseModel):
     resolution: str | None
     file_size: int | None
     has_subtitles: bool
+    video_type: str = "standard"
     status: str
     created_at: datetime
 

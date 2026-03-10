@@ -53,7 +53,7 @@ class SubtitleSettings(BaseSettings):
     outline_width: int = 2
     position: str = "bottom"
     max_chars_per_line: int = 20
-    max_lines: int = 2
+    max_lines: int = 1
     margin_bottom: int = 50
 
 

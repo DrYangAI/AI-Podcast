@@ -10,6 +10,7 @@ from .audio_asset import AudioAsset
 from .video_output import VideoOutput
 from .provider_config import ProviderConfig
 from .content_source import ContentSource, FetchedTopic
+from .voice_clone import VoiceClone
 
 __all__ = [
     "Project",
@@ -23,4 +24,5 @@ __all__ = [
     "ProviderConfig",
     "ContentSource",
     "FetchedTopic",
+    "VoiceClone",
 ]

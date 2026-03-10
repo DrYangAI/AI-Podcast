@@ -23,6 +23,7 @@ class VideoOutput(Base):
     file_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     has_subtitles: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     subtitle_file: Mapped[str | None] = mapped_column(Text, nullable=True)
+    video_type: Mapped[str] = mapped_column(String(20), nullable=False, default="standard")
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 

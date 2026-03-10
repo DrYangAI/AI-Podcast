@@ -62,6 +62,19 @@ async def _migrate_add_columns(conn) -> None:
         ("projects", "subtitle_outline_width", "INTEGER DEFAULT 1 NOT NULL"),
         ("projects", "subtitle_position", "VARCHAR(10) DEFAULT 'bottom' NOT NULL"),
         ("projects", "subtitle_margin_bottom", "INTEGER DEFAULT 30 NOT NULL"),
+        ("projects", "portrait_composite_enabled", "BOOLEAN DEFAULT 1 NOT NULL"),
+        ("projects", "portrait_bg_color", "VARCHAR(20) DEFAULT '#1A1A2E' NOT NULL"),
+        ("projects", "portrait_title_text", "VARCHAR(255)"),
+        ("video_outputs", "video_type", "VARCHAR(20) DEFAULT 'standard' NOT NULL"),
+        ("projects", "tts_voice_id", "VARCHAR(100)"),
+        ("projects", "tts_voice_clone_id", "VARCHAR(36)"),
+        ("voice_clones", "speaker_id", "VARCHAR(100) DEFAULT '' NOT NULL"),
+        ("voice_clones", "training_status", "INTEGER DEFAULT 0 NOT NULL"),
+        ("projects", "portrait_title_font_size", "INTEGER DEFAULT 36 NOT NULL"),
+        ("projects", "portrait_title_y", "INTEGER DEFAULT 82 NOT NULL"),
+        ("projects", "portrait_video_y", "INTEGER DEFAULT 480 NOT NULL"),
+        ("projects", "portrait_subtitle_font_size", "INTEGER DEFAULT 38 NOT NULL"),
+        ("projects", "portrait_subtitle_margin_v", "INTEGER DEFAULT 550 NOT NULL"),
     ]
     for table, column, col_type in migrations:
         try:

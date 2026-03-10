@@ -8,7 +8,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from ..database import async_session_factory
-from ..models import Project, Script, AudioAsset, ProviderConfig
+from ..models import Project, Script, AudioAsset, ProviderConfig, VoiceClone
 from ..providers.base import ProviderType
 from ..providers.registry import ProviderRegistry
 from ..config import get_settings
@@ -92,7 +92,45 @@ class AudioService:
             output_dir.mkdir(parents=True, exist_ok=True)
             output_path = output_dir / "speech.mp3"
 
-            voice_id = extra_config.get("voice", "") if extra_config else ""
+            # --- 声音选择优先级：项目克隆声音 > 项目预置声音 > 全局默认克隆 > Provider 默认 ---
+            project = await db.get(Project, project_id)
+            voice_id = ""
+            voice_display = ""
+            use_icl = False
+
+            if project and getattr(project, "tts_voice_clone_id", None):
+                # 项目指定了克隆声音 — 使用训练后的 speaker_id
+                voice_clone = await db.get(VoiceClone, project.tts_voice_clone_id)
+                if voice_clone and voice_clone.speaker_id and voice_clone.training_status in (2, 4):
+                    voice_id = voice_clone.speaker_id
+                    use_icl = True
+                    voice_display = f"clone:{voice_clone.name}"
+                    logger.info("Using cloned voice: %s (speaker_id=%s, project override)",
+                                voice_clone.name, voice_clone.speaker_id)
+
+            if not voice_id and project and getattr(project, "tts_voice_id", None):
+                # 项目指定了预置声音
+                voice_id = project.tts_voice_id
+                voice_display = voice_id
+                logger.info("Using preset voice: %s (project override)", voice_id)
+
+            if not voice_id:
+                # 检查全局默认克隆声音
+                result = await db.execute(
+                    select(VoiceClone).where(VoiceClone.is_default == True)
+                )
+                default_clone = result.scalar_one_or_none()
+                if default_clone and default_clone.speaker_id and default_clone.training_status in (2, 4):
+                    voice_id = default_clone.speaker_id
+                    use_icl = True
+                    voice_display = f"clone:{default_clone.name}"
+                    logger.info("Using cloned voice: %s (speaker_id=%s, global default)",
+                                default_clone.name, default_clone.speaker_id)
+
+            if not voice_id:
+                # Provider 默认声音
+                voice_id = extra_config.get("voice", "") if extra_config else ""
+                voice_display = voice_id
 
             # Clean script text: remove annotations and markdown formatting
             clean_text = clean_script_for_tts(script.content)
@@ -103,6 +141,7 @@ class AudioService:
                 script=clean_text,
                 voice_id=voice_id,
                 output_path=output_path,
+                use_icl=use_icl,
             )
 
             # Save or update audio asset
@@ -114,7 +153,7 @@ class AudioService:
                 audio.duration = response.duration
                 audio.sample_rate = response.sample_rate
                 audio.provider_id = tts_config.id
-                audio.voice_id = voice_id
+                audio.voice_id = voice_display or voice_id
                 audio.is_manual = False
                 audio.status = "completed"
             else:
@@ -124,7 +163,7 @@ class AudioService:
                     duration=response.duration,
                     sample_rate=response.sample_rate,
                     provider_id=tts_config.id,
-                    voice_id=voice_id,
+                    voice_id=voice_display or voice_id,
                     is_manual=False,
                     status="completed",
                 )

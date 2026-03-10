@@ -58,9 +58,10 @@ class TextProvider(BaseProvider):
         ))
 
     async def generate_image_prompts(self, segments: list[str],
-                                       language: str = "en") -> list[str]:
+                                       language: str = "en",
+                                       aspect_ratio: str = "16:9") -> list[str]:
         """Generate image prompts for each content segment."""
-        prompt = self._build_image_prompt_generation(segments, language)
+        prompt = self._build_image_prompt_generation(segments, language, aspect_ratio)
         response = await self.generate(TextGenerationRequest(
             prompt=prompt,
             system_prompt=self._get_image_prompt_system_prompt(),
@@ -116,7 +117,8 @@ class TextProvider(BaseProvider):
         )
 
     def _build_image_prompt_generation(self, segments: list[str],
-                                        language: str = "en") -> str:
+                                        language: str = "en",
+                                        aspect_ratio: str = "16:9") -> str:
         numbered = "\n".join(f"[段落{i+1}]: {seg}" for i, seg in enumerate(segments))
         if language == "zh":
             lang_instruction = "使用中文"
@@ -124,12 +126,23 @@ class TextProvider(BaseProvider):
         else:
             lang_instruction = "使用英文"
             lang_label = "英文提示词"
+
+        # Build aspect ratio composition guidance
+        ratio_hints = {
+            "9:16": "竖版构图(9:16竖屏),画面内容应纵向排列,充分利用上下空间,采用从上到下的视觉动线,避免横向排列元素导致上下留白",
+            "16:9": "横版构图(16:9宽屏),画面内容应横向展开,充分利用左右空间",
+            "1:1": "方形构图(1:1),画面内容应居中均衡分布",
+        }
+        ratio_hint = ratio_hints.get(aspect_ratio, f"画面比例为{aspect_ratio},请根据此比例设计构图")
+
         return (
             f"请为以下每个段落生成一个用于AI绘图的{lang_label}:\n\n{numbered}\n\n"
             f"要求:\n"
             f"- {lang_instruction}\n"
             f"- 风格: 专业医学科普插图,现代扁平风格\n"
             f"- 避免出现人脸特写\n"
+            f"- 【重要】构图要求: {ratio_hint}\n"
+            f"- 每个提示词中必须明确描述画面元素的空间布局方向\n"
             f"- 用 [PROMPT_1], [PROMPT_2]... 标记每个提示词"
         )
 

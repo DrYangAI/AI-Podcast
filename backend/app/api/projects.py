@@ -63,17 +63,28 @@ async def create_project(data: ProjectCreate, db: AsyncSession = Depends(get_db)
         source_url=data.source_url,
         aspect_ratio=data.aspect_ratio,
         video_template=data.video_template,
+        portrait_composite_enabled=data.portrait_composite_enabled,
+        portrait_bg_color=data.portrait_bg_color,
+        portrait_title_text=data.portrait_title_text,
     )
     db.add(project)
     await db.flush()
 
     # Initialize pipeline steps
+    portrait_enabled = data.portrait_composite_enabled
     for i, step_name in enumerate(PipelineStep.STEP_NAMES):
+        if step_name == "topic_input":
+            initial_status = "completed"
+        elif step_name == "portrait_composite" and not portrait_enabled:
+            initial_status = "skipped"
+        else:
+            initial_status = "pending"
+
         step = PipelineStep(
             project_id=project.id,
             step_name=step_name,
             step_order=i,
-            status="completed" if step_name == "topic_input" else "pending",
+            status=initial_status,
         )
         db.add(step)
 
@@ -107,8 +118,43 @@ async def update_project(project_id: str, data: ProjectUpdate, db: AsyncSession 
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    for field, value in data.model_dump(exclude_unset=True).items():
+    update_fields = data.model_dump(exclude_unset=True)
+    for field, value in update_fields.items():
         setattr(project, field, value)
+
+    # 当切换竖屏合成开关时，同步更新 pipeline step 状态
+    if "portrait_composite_enabled" in update_fields:
+        step_result = await db.execute(
+            select(PipelineStep).where(
+                PipelineStep.project_id == project_id,
+                PipelineStep.step_name == "portrait_composite",
+            )
+        )
+        portrait_step = step_result.scalar_one_or_none()
+        if portrait_step:
+            if update_fields["portrait_composite_enabled"]:
+                # 启用：从 skipped 恢复为 pending（仅当当前是 skipped 时）
+                if portrait_step.status == "skipped":
+                    portrait_step.status = "pending"
+            else:
+                # 禁用：标记为 skipped（除非正在运行）
+                if portrait_step.status not in ("in_progress",):
+                    portrait_step.status = "skipped"
+
+    # 当更新了图片宽高时，自动同步 aspect_ratio
+    if "image_width" in update_fields or "image_height" in update_fields:
+        w = project.image_width
+        h = project.image_height
+        if w and h:
+            ratio = w / h
+            if abs(ratio - 16 / 9) < 0.05:
+                project.aspect_ratio = "16:9"
+            elif abs(ratio - 9 / 16) < 0.05:
+                project.aspect_ratio = "9:16"
+            elif abs(ratio - 1) < 0.05:
+                project.aspect_ratio = "1:1"
+            else:
+                project.aspect_ratio = f"{w}:{h}"
 
     await db.flush()
     await db.refresh(project)
@@ -139,16 +185,27 @@ async def duplicate_project(project_id: str, db: AsyncSession = Depends(get_db))
         source_type=original.source_type,
         aspect_ratio=original.aspect_ratio,
         video_template=original.video_template,
+        portrait_composite_enabled=getattr(original, "portrait_composite_enabled", True),
+        portrait_bg_color=getattr(original, "portrait_bg_color", "#1A1A2E"),
+        portrait_title_text=getattr(original, "portrait_title_text", None),
     )
     db.add(new_project)
     await db.flush()
 
+    portrait_enabled = getattr(original, "portrait_composite_enabled", True)
     for i, step_name in enumerate(PipelineStep.STEP_NAMES):
+        if step_name == "topic_input":
+            initial_status = "completed"
+        elif step_name == "portrait_composite" and not portrait_enabled:
+            initial_status = "skipped"
+        else:
+            initial_status = "pending"
+
         step = PipelineStep(
             project_id=new_project.id,
             step_name=step_name,
             step_order=i,
-            status="completed" if step_name == "topic_input" else "pending",
+            status=initial_status,
         )
         db.add(step)
 
@@ -222,6 +279,23 @@ async def list_images(project_id: str, db: AsyncSession = Depends(get_db)):
         select(ImageAsset).where(ImageAsset.project_id == project_id)
     )
     return [ImageAssetResponse.model_validate(i) for i in result.scalars().all()]
+
+
+@router.post("/{project_id}/generate-prompts")
+async def generate_image_prompts(project_id: str, db: AsyncSession = Depends(get_db)):
+    """Generate image prompts for all segments without generating images."""
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    from ..services.image_service import ImageService
+    service = ImageService()
+    try:
+        prompts = await service.generate_prompts_only(project_id)
+        return {"status": "ok", "prompts": prompts}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/{project_id}/segments/{segment_id}/image/regenerate", response_model=ImageAssetResponse)

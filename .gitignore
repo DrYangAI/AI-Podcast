@@ -34,5 +34,12 @@ Thumbs.db
 # Build output
 frontend/dist/
 
+# Logs
+backend/.server.log
+*.log
+
+# Scripts (local only)
+restart.sh
+
 # Claude Code
 .claude/

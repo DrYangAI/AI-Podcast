@@ -217,6 +217,12 @@ function getTypeLabel(t: string) {
             <el-option label="seed-icl-2.0 (声音复刻2.0)" value="seed-icl-2.0" />
           </el-select>
         </el-form-item>
+        <el-form-item label="声音复刻资源 ID" v-if="form.provider_key === 'doubao_tts'">
+          <el-select v-model="form.config.icl_resource_id" placeholder="选择声音复刻资源 ID（克隆声音时使用）" clearable>
+            <el-option label="seed-icl-1.0 (声音复刻1.0)" value="seed-icl-1.0" />
+            <el-option label="seed-icl-2.0 (声音复刻2.0)" value="seed-icl-2.0" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="设为默认">
           <el-switch v-model="form.is_default" />
         </el-form-item>

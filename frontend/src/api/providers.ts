@@ -1,5 +1,6 @@
 import apiClient from './client'
 import type { ProviderConfig, ProviderTypeInfo } from '../types/provider'
+import type { PresetVoice } from '../types/voice'
 
 export const providersApi = {
   list(providerType?: string) {
@@ -35,5 +36,9 @@ export const providersApi = {
 
   test(id: string) {
     return apiClient.post<{ success: boolean; message: string }>(`/providers/${id}/test`)
+  },
+
+  listVoices(providerId: string) {
+    return apiClient.get<PresetVoice[]>(`/providers/${providerId}/voices`)
   },
 }

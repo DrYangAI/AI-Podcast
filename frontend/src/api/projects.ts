@@ -48,6 +48,11 @@ export const projectsApi = {
   getImages(id: string) {
     return apiClient.get<ImageAsset[]>(`/projects/${id}/images`)
   },
+  generatePrompts(id: string) {
+    return apiClient.post(`/projects/${id}/generate-prompts`, null, {
+      timeout: 180000,  // 提示词生成需要调用 LLM，耗时较长，设置 3 分钟超时
+    })
+  },
   regenerateSegmentImage(projectId: string, segmentId: string, prompt?: string) {
     return apiClient.post<ImageAsset>(`/projects/${projectId}/segments/${segmentId}/image/regenerate`,
       prompt !== undefined ? { prompt } : null)
