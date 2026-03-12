@@ -137,11 +137,13 @@ class AudioService:
             logger.info("Cleaned script for TTS: removed %d chars of annotations/formatting",
                         len(script.content) - len(clean_text))
 
+            max_chunk = settings.tts.icl_max_chars if use_icl else settings.tts.standard_max_chars
             response = await tts_provider.synthesize_script(
                 script=clean_text,
                 voice_id=voice_id,
                 output_path=output_path,
                 use_icl=use_icl,
+                max_chunk_chars=max_chunk,
             )
 
             # Save or update audio asset

@@ -53,6 +53,11 @@ const router = createRouter({
           name: 'project-video',
           component: () => import('../views/VideoPreviewView.vue'),
         },
+        {
+          path: 'publish',
+          name: 'project-publish',
+          component: () => import('../views/PublishAssetsView.vue'),
+        },
       ],
     },
     {

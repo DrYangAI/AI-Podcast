@@ -11,6 +11,7 @@ from .video_output import VideoOutput
 from .provider_config import ProviderConfig
 from .content_source import ContentSource, FetchedTopic
 from .voice_clone import VoiceClone
+from .publish_asset import PublishAsset
 
 __all__ = [
     "Project",
@@ -25,4 +26,5 @@ __all__ = [
     "ContentSource",
     "FetchedTopic",
     "VoiceClone",
+    "PublishAsset",
 ]

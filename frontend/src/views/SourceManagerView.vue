@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { sourcesApi } from '../api/sources'
 import type { ContentSource, FetchedTopic } from '../types/source'
+import { formatDateTime } from '../utils/date'
 
 const router = useRouter()
 const sources = ref<ContentSource[]>([])
@@ -119,13 +120,7 @@ async function handleCreateProject(topicId: string) {
   }
 }
 
-function formatTime(dateStr: string | null) {
-  if (!dateStr) return '从未'
-  return new Date(dateStr).toLocaleString('zh-CN', {
-    month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit',
-  })
-}
+// formatTime removed — use shared formatDateTime from utils/date
 
 function activeSourceName() {
   const s = sources.value.find(s => s.id === activeSourceId.value)
@@ -170,7 +165,7 @@ function activeSourceName() {
                     {{ source.url }}
                   </el-text>
                   <el-text type="info" size="small" style="display: block; margin-top: 2px;">
-                    上次抓取: {{ formatTime(source.last_fetched_at) }}
+                    上次抓取: {{ formatDateTime(source.last_fetched_at) }}
                   </el-text>
                 </div>
                 <div style="display: flex; gap: 4px; margin-left: 8px;" @click.stop>
@@ -216,7 +211,7 @@ function activeSourceName() {
             </el-table-column>
             <el-table-column label="抓取时间" width="110">
               <template #default="{ row }">
-                <el-text size="small">{{ formatTime(row.fetched_at) }}</el-text>
+                <el-text size="small">{{ formatDateTime(row.fetched_at) }}</el-text>
               </template>
             </el-table-column>
             <el-table-column label="操作" width="120">

@@ -41,4 +41,5 @@ class PipelineStep(Base):
         "tts_audio",
         "video_composition",
         "portrait_composite",
+        "publish_copy",
     ]

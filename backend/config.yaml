@@ -1,6 +1,6 @@
 app:
   name: "AI Podcast - Health Science Video Generator"
-  version: "1.1.0"
+  version: "1.2.0"
   debug: false
   host: "0.0.0.0"
   port: 9527
@@ -32,6 +32,12 @@ output:
     audio_codec: "aac"
     audio_bitrate: "192k"
     fps: 30
+
+asr:
+  enabled: true
+  model_size: "medium"
+  device: "auto"
+  compute_type: "int8"
 
 subtitles:
   enabled: true
@@ -73,6 +79,10 @@ providers:
     text: "claude"
     image: "dalle"
     tts: "openai_tts"
+
+tts:
+  icl_max_chars: 500
+  standard_max_chars: 2000
 
 tasks:
   max_concurrent: 3

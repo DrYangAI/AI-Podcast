@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { Project } from '../types/project'
 import { projectsApi } from '../api/projects'
+import { formatDateTime } from '../utils/date'
 
 const router = useRouter()
 const projects = ref<Project[]>([])
@@ -68,7 +69,7 @@ function getStatusLabel(s: string) {
         </template>
       </el-table-column>
       <el-table-column prop="created_at" label="创建时间" width="170">
-        <template #default="{ row }">{{ new Date(row.created_at).toLocaleString('zh-CN') }}</template>
+        <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
       </el-table-column>
       <el-table-column label="操作" width="150" fixed="right">
         <template #default="{ row }">

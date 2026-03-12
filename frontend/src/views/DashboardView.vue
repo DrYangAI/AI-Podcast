@@ -5,6 +5,7 @@ import { ElMessage } from 'element-plus'
 import type { Project } from '../types/project'
 import { projectsApi } from '../api/projects'
 import { sourcesApi } from '../api/sources'
+import { formatDateTime } from '../utils/date'
 
 const router = useRouter()
 const recentProjects = ref<Project[]>([])
@@ -130,7 +131,7 @@ function getStatusLabel(status: string) {
           </template>
         </el-table-column>
         <el-table-column prop="created_at" label="创建时间" width="180">
-          <template #default="{ row }">{{ new Date(row.created_at).toLocaleString('zh-CN') }}</template>
+          <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
         </el-table-column>
       </el-table>
     </el-card>

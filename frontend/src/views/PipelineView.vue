@@ -25,6 +25,7 @@ const stepLabels: Record<string, string> = {
   tts_audio: '语音合成',
   video_composition: '视频合成',
   portrait_composite: '竖屏合成',
+  publish_copy: '发布素材',
 }
 
 const stepRoutes: Record<string, string> = {
@@ -35,6 +36,7 @@ const stepRoutes: Record<string, string> = {
   tts_audio: 'project-audio',
   video_composition: 'project-video',
   portrait_composite: 'project-video',
+  publish_copy: 'project-publish',
 }
 
 const stepProviderType: Record<string, string> = {
@@ -42,6 +44,7 @@ const stepProviderType: Record<string, string> = {
   image_generation: 'image',
   script_generation: 'text',
   tts_audio: 'tts',
+  publish_copy: 'text',
 }
 
 function getStepColor(status: string) {
@@ -193,6 +196,9 @@ async function togglePortraitComposite(enabled: boolean) {
               />
               <div v-if="step.step_name === 'portrait_composite'" style="margin-top: 4px;">
                 <el-text type="info" size="small">将 16:9 横屏视频合成为 9:16 竖屏，标题在上、字幕在下</el-text>
+              </div>
+              <div v-if="step.step_name === 'publish_copy'" style="margin-top: 4px;">
+                <el-text type="info" size="small">生成视频号、小红书、抖音、腾讯视频、今日头条的封面和发布文案</el-text>
               </div>
               <div v-if="step.error_message" style="margin-top: 4px;">
                 <el-text type="danger" size="small">{{ step.error_message }}</el-text>

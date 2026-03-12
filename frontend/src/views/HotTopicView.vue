@@ -12,6 +12,7 @@ const SOURCE_OPTIONS = [
   { value: 'weibo', label: '微博热搜' },
   { value: 'baidu', label: '百度热搜' },
   { value: 'toutiao', label: '头条热榜' },
+  { value: 'tencent', label: '腾讯新闻' },
 ]
 
 async function handleFetch() {
@@ -50,6 +51,7 @@ function getSourceTagType(source: string) {
     weibo: 'danger',
     baidu: '',
     toutiao: 'warning',
+    tencent: 'success',
   }
   return map[source] || 'info'
 }

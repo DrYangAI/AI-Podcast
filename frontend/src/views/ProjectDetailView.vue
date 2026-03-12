@@ -67,6 +67,7 @@ const tabs = [
   { name: 'project-script', label: '口播稿', icon: 'Microphone' },
   { name: 'project-audio', label: '音频', icon: 'Headset' },
   { name: 'project-video', label: '视频', icon: 'VideoCamera' },
+  { name: 'project-publish', label: '发布素材', icon: 'Promotion' },
 ]
 </script>
 

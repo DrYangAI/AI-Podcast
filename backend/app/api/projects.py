@@ -12,13 +12,17 @@ from sqlalchemy.orm import selectinload
 
 from ..config import get_settings
 from ..database import get_db
-from ..models import Project, PipelineStep, Article, Segment, ImageAsset, Script, AudioAsset, VideoOutput
+from ..models import Project, PipelineStep, Article, Segment, ImageAsset, Script, AudioAsset, VideoOutput, PublishAsset
 from ..schemas.project import (
     ProjectCreate, ProjectUpdate, ProjectResponse, ProjectDetailResponse,
     PipelineStepResponse, ArticleResponse, ArticleUpdate,
     SegmentResponse, SegmentUpdate, ImageAssetResponse, ImageRegenerateRequest,
     ScriptResponse, ScriptUpdate, AudioAssetResponse, VideoOutputResponse,
     PaginatedResponse,
+)
+from ..schemas.publish import (
+    PublishAssetResponse, PublishAssetUpdate,
+    CoverRegenerateRequest, CoverPromptResponse, CoverPromptUpdate,
 )
 
 router = APIRouter()
@@ -303,7 +307,7 @@ async def regenerate_segment_image(
     project_id: str,
     segment_id: str,
     data: ImageRegenerateRequest | None = None,
-    background_tasks: BackgroundTasks = None,
+    background_tasks: BackgroundTasks = BackgroundTasks(),
     db: AsyncSession = Depends(get_db),
 ):
     """Regenerate a single image for a segment with optional custom prompt."""
@@ -453,3 +457,151 @@ async def list_videos(project_id: str, db: AsyncSession = Depends(get_db)):
         select(VideoOutput).where(VideoOutput.project_id == project_id)
     )
     return [VideoOutputResponse.model_validate(v) for v in result.scalars().all()]
+
+
+# --- Publish assets endpoints ---
+# NOTE: Static path endpoints (regenerate-cover, cover-prompt, from-segment)
+# MUST be defined before dynamic {platform} endpoints to avoid routing conflicts.
+
+@router.get("/{project_id}/publish-assets", response_model=list[PublishAssetResponse])
+async def list_publish_assets(project_id: str, db: AsyncSession = Depends(get_db)):
+    """Get publish assets for all platforms."""
+    result = await db.execute(
+        select(PublishAsset).where(PublishAsset.project_id == project_id)
+    )
+    return [PublishAssetResponse.model_validate(a) for a in result.scalars().all()]
+
+
+@router.post("/{project_id}/publish-assets/regenerate-cover")
+async def regenerate_cover(
+    project_id: str,
+    data: CoverRegenerateRequest | None = None,
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    db: AsyncSession = Depends(get_db),
+):
+    """Regenerate AI cover images for all platforms."""
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    custom_prompt = data.prompt if data else None
+    from ..services.publish_service import PublishService
+    service = PublishService()
+    background_tasks.add_task(service.regenerate_covers, project_id, custom_prompt)
+
+    return {"status": "ok", "message": "Cover regeneration started"}
+
+
+@router.get("/{project_id}/publish-assets/cover-prompt")
+async def get_cover_prompt(project_id: str, db: AsyncSession = Depends(get_db)):
+    """Get the cover image generation prompt."""
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return CoverPromptResponse(prompt=project.cover_prompt)
+
+
+@router.put("/{project_id}/publish-assets/cover-prompt")
+async def update_cover_prompt(
+    project_id: str,
+    data: CoverPromptUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Update the cover prompt without regenerating."""
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    project.cover_prompt = data.prompt
+    await db.flush()
+    return CoverPromptResponse(prompt=project.cover_prompt)
+
+
+@router.post("/{project_id}/publish-assets/from-segment/{segment_id}")
+async def use_segment_as_cover(
+    project_id: str,
+    segment_id: str,
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    db: AsyncSession = Depends(get_db),
+):
+    """Use a segment image as cover base and re-derive all platform covers."""
+    # Validate segment image exists
+    result = await db.execute(
+        select(ImageAsset).where(
+            ImageAsset.segment_id == segment_id,
+            ImageAsset.project_id == project_id,
+        )
+    )
+    image_asset = result.scalar_one_or_none()
+    if not image_asset or not image_asset.file_path:
+        raise HTTPException(status_code=404, detail="No image found for this segment")
+
+    from ..services.publish_service import PublishService
+    service = PublishService()
+    background_tasks.add_task(service.regenerate_from_segment, project_id, segment_id)
+
+    return {"status": "ok", "message": "Cover re-generation started"}
+
+
+@router.put("/{project_id}/publish-assets/{platform}", response_model=PublishAssetResponse)
+async def update_publish_asset(
+    project_id: str,
+    platform: str,
+    data: PublishAssetUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Update title, description or tags for a platform."""
+    result = await db.execute(
+        select(PublishAsset).where(
+            PublishAsset.project_id == project_id,
+            PublishAsset.platform == platform,
+        )
+    )
+    asset = result.scalar_one_or_none()
+    if not asset:
+        raise HTTPException(status_code=404, detail=f"Publish asset not found for platform: {platform}")
+
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(asset, field, value)
+
+    await db.flush()
+    await db.refresh(asset)
+    return PublishAssetResponse.model_validate(asset)
+
+
+@router.post("/{project_id}/publish-assets/{platform}/upload-cover", response_model=PublishAssetResponse)
+async def upload_cover(
+    project_id: str,
+    platform: str,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a custom cover image for a specific platform."""
+    valid_platforms = {"weixin", "xiaohongshu", "douyin", "tencent_video", "toutiao"}
+    if platform not in valid_platforms:
+        raise HTTPException(status_code=400, detail=f"Invalid platform: {platform}")
+
+    allowed_types = {"image/png", "image/jpeg", "image/webp"}
+    if file.content_type not in allowed_types:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type: {file.content_type}")
+
+    content = await file.read()
+
+    from ..services.publish_service import PublishService
+    service = PublishService()
+    await service.handle_cover_upload(project_id, platform, content, file.filename or "upload.png")
+
+    # Return updated asset
+    result = await db.execute(
+        select(PublishAsset).where(
+            PublishAsset.project_id == project_id,
+            PublishAsset.platform == platform,
+        )
+    )
+    asset = result.scalar_one_or_none()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Publish asset not found")
+    await db.refresh(asset)
+    return PublishAssetResponse.model_validate(asset)

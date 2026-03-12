@@ -42,6 +42,7 @@ class Project(Base):
     portrait_subtitle_margin_v: Mapped[int] = mapped_column(Integer, nullable=False, default=550)
     tts_voice_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     tts_voice_clone_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    cover_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
     metadata_json: Mapped[str | None] = mapped_column("metadata", Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -55,3 +56,4 @@ class Project(Base):
     script = relationship("Script", back_populates="project", uselist=False, cascade="all, delete-orphan")
     audio = relationship("AudioAsset", back_populates="project", uselist=False, cascade="all, delete-orphan")
     videos = relationship("VideoOutput", back_populates="project", cascade="all, delete-orphan")
+    publish_assets = relationship("PublishAsset", back_populates="project", cascade="all, delete-orphan")

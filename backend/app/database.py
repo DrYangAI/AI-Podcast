@@ -75,6 +75,8 @@ async def _migrate_add_columns(conn) -> None:
         ("projects", "portrait_video_y", "INTEGER DEFAULT 480 NOT NULL"),
         ("projects", "portrait_subtitle_font_size", "INTEGER DEFAULT 38 NOT NULL"),
         ("projects", "portrait_subtitle_margin_v", "INTEGER DEFAULT 550 NOT NULL"),
+        ("projects", "cover_prompt", "TEXT"),
+        ("publish_assets", "cover_status", "VARCHAR(20) DEFAULT 'pending' NOT NULL"),
     ]
     for table, column, col_type in migrations:
         try:

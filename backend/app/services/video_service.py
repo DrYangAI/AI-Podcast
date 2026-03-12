@@ -134,6 +134,18 @@ class VideoService:
             file_name = self._build_filename(project, settings.output.naming_rule)
             output_path = output_dir / f"{file_name}.{settings.output.default_format}"
 
+            # Try ASR-based precise subtitles
+            asr_srt_path = None
+            if effective_subtitle_enabled:
+                from .asr_service import transcribe_and_generate_srt
+                asr_srt_dir = Path(settings.storage.base_dir) / "subtitles" / project_id
+                asr_srt_dir.mkdir(parents=True, exist_ok=True)
+                asr_srt_path = await transcribe_and_generate_srt(
+                    audio_path=Path(audio.file_path),
+                    output_path=asr_srt_dir / "asr_subtitles.srt",
+                    max_chars_per_line=settings.subtitles.max_chars_per_line,
+                )
+
             # Compose video
             composer = VideoComposer()
             await composer.compose(
@@ -159,6 +171,7 @@ class VideoService:
                     "audio_codec": settings.output.video_quality.audio_codec,
                     "fps": settings.output.video_quality.fps,
                 },
+                external_srt_path=asr_srt_path,
             )
 
             # Get file size
@@ -220,5 +233,9 @@ class VideoService:
 
     @staticmethod
     def _sanitize_filename(name: str) -> str:
-        """Remove characters not safe for filenames."""
-        return re.sub(r'[<>:"/\\|?*\s]+', '_', name).strip('_')
+        """Remove characters not safe for filenames or URLs."""
+        # Strip markdown headings and leading whitespace
+        name = re.sub(r'^[\s#]+', '', name)
+        # Remove chars unsafe for filenames/URLs: ASCII specials, #, and full-width punctuation
+        name = re.sub(r'[<>:"/\\|?*\s#？！：""''【】（）]+', '_', name)
+        return name.strip('_')

@@ -7,7 +7,7 @@ export const useHotlistStore = defineStore('hotlist', () => {
   const topics = ref<HotTopicItem[]>([])
   const totalScraped = ref(0)
   const loading = ref(false)
-  const selectedSources = ref<string[]>(['weibo', 'baidu', 'toutiao'])
+  const selectedSources = ref<string[]>(['weibo', 'baidu', 'toutiao', 'tencent'])
   const activeCategory = ref('all')
 
   const categories = computed(() => {

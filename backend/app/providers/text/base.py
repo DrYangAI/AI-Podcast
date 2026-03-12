@@ -158,3 +158,128 @@ class TextProvider(BaseProvider):
             lines = [l.strip() for l in content.split('\n') if l.strip() and not l.strip().startswith('[')]
             prompts.extend(lines[len(prompts):expected_count])
         return prompts[:expected_count]
+
+    # --- Publish copy (multi-platform titles, descriptions, tags) ---
+
+    async def generate_publish_copy(self, title: str, article: str,
+                                      topic: str) -> dict[str, dict]:
+        """Generate viral titles, descriptions and tags for 5 platforms."""
+        prompt = self._build_publish_copy_prompt(title, article, topic)
+        response = await self.generate(TextGenerationRequest(
+            prompt=prompt,
+            system_prompt=self._get_publish_copy_system_prompt(),
+            temperature=0.7,
+            max_tokens=4096,
+        ))
+        return self._parse_publish_copy(response.content)
+
+    async def generate_cover_prompt(self, topic: str, title: str,
+                                      aspect_ratio: str = "3:4") -> str:
+        """Generate an image prompt for a video cover."""
+        ratio_hints = {
+            "3:4": "竖版构图(3:4),主体居中偏上,下方留空",
+            "16:9": "横版宽屏构图(16:9),主体居中,左右充分利用",
+        }
+        ratio_hint = ratio_hints.get(aspect_ratio, f"画面比例{aspect_ratio}")
+
+        prompt = (
+            f"请为以下健康科普短视频生成一个封面背景图的AI绘图提示词:\n\n"
+            f"视频主题: {topic}\n"
+            f"视频标题: {title}\n\n"
+            f"要求:\n"
+            f"- 使用英文提示词\n"
+            f"- 画面明亮、专业、现代感强\n"
+            f"- 适合健康/医学科普类视频封面\n"
+            f"- 色彩鲜明,视觉冲击力强\n"
+            f"- 不包含任何文字\n"
+            f"- {ratio_hint}\n"
+            f"- 避免出现人脸特写\n"
+            f"- 只输出提示词本身,不要任何额外说明"
+        )
+        response = await self.generate(TextGenerationRequest(
+            prompt=prompt,
+            system_prompt="你是一位AI绘画提示词专家,擅长设计短视频封面。只输出英文提示词。",
+            temperature=0.6,
+        ))
+        return response.content.strip()
+
+    def _build_publish_copy_prompt(self, title: str, article: str, topic: str) -> str:
+        # Truncate article to avoid token overflow
+        article_excerpt = article[:2000] if len(article) > 2000 else article
+        return (
+            f"请根据以下健康科普视频内容,为5个平台生成爆款标题、摘要和标签。\n\n"
+            f"视频主题: {topic}\n"
+            f"文章标题: {title}\n"
+            f"文章内容:\n{article_excerpt}\n\n"
+            f"为以下每个平台各生成一组:\n\n"
+            f"1. 微信视频号(weixin) - 标题≤30字, 摘要≤1000字\n"
+            f"2. 小红书(xiaohongshu) - 标题≤20字, 摘要200-600字, 种草风格, 适当使用emoji\n"
+            f"3. 抖音(douyin) - 标题≤30字, 摘要≤300字, 短视频风格\n"
+            f"4. 腾讯视频(tencent_video) - 标题10-30字, 摘要≤200字, 正式风格\n"
+            f"5. 今日头条(toutiao) - 标题≤30字, 摘要≤400字, 不要夸张\n\n"
+            f"要求:\n"
+            f"- 标题要有吸引力,能引发点击\n"
+            f"- 摘要要包含核心信息,引发观看欲望\n"
+            f"- 每个平台生成3-5个推荐标签(带#号)\n"
+            f"- 不同平台的标题和摘要风格要有差异,符合各平台用户习惯\n\n"
+            f"请严格按以下格式输出(每个平台一个区块):\n\n"
+            f"[PLATFORM_weixin]\n"
+            f"title: 标题内容\n"
+            f"description: 摘要内容\n"
+            f"tags: #标签1 #标签2 #标签3\n\n"
+            f"[PLATFORM_xiaohongshu]\n"
+            f"title: 标题内容\n"
+            f"description: 摘要内容\n"
+            f"tags: #标签1 #标签2 #标签3\n\n"
+            f"[PLATFORM_douyin]\n"
+            f"title: 标题内容\n"
+            f"description: 摘要内容\n"
+            f"tags: #标签1 #标签2 #标签3\n\n"
+            f"[PLATFORM_tencent_video]\n"
+            f"title: 标题内容\n"
+            f"description: 摘要内容\n"
+            f"tags: #标签1 #标签2 #标签3\n\n"
+            f"[PLATFORM_toutiao]\n"
+            f"title: 标题内容\n"
+            f"description: 摘要内容\n"
+            f"tags: #标签1 #标签2 #标签3"
+        )
+
+    def _get_publish_copy_system_prompt(self) -> str:
+        return (
+            "你是一位资深的短视频运营专家,精通微信视频号、小红书、抖音、腾讯视频和今日头条的内容运营。\n"
+            "你擅长撰写高点击率的标题和摘要,了解各平台的用户特点和推荐算法偏好。\n"
+            "请严格按照指定格式输出,每个平台一个[PLATFORM_xxx]区块。"
+        )
+
+    def _parse_publish_copy(self, content: str) -> dict[str, dict]:
+        """Parse AI response into per-platform dicts.
+
+        Returns: {"weixin": {"title": ..., "description": ..., "tags": ...}, ...}
+        """
+        platforms = ["weixin", "xiaohongshu", "douyin", "tencent_video", "toutiao"]
+        result: dict[str, dict] = {}
+
+        for platform in platforms:
+            pattern = (
+                rf'\[PLATFORM_{platform}\]\s*\n'
+                rf'title:\s*(.+?)\n'
+                rf'description:\s*(.+?)\n'
+                rf'tags:\s*(.+?)(?=\n\[PLATFORM_|\Z)'
+            )
+            match = re.search(pattern, content, re.DOTALL)
+            if match:
+                result[platform] = {
+                    "title": match.group(1).strip(),
+                    "description": match.group(2).strip(),
+                    "tags": match.group(3).strip(),
+                }
+            else:
+                # Fallback: provide empty data
+                result[platform] = {
+                    "title": "",
+                    "description": "",
+                    "tags": "",
+                }
+
+        return result

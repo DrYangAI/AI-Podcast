@@ -44,6 +44,15 @@ class VideoQualitySettings(BaseSettings):
     fps: int = 30
 
 
+class ASRSettings(BaseSettings):
+    model_config = {"protected_namespaces": ()}
+
+    enabled: bool = True
+    model_size: str = "medium"
+    device: str = "auto"
+    compute_type: str = "int8"
+
+
 class SubtitleSettings(BaseSettings):
     enabled: bool = True
     font_family: str = "Noto Sans CJK SC"
@@ -76,6 +85,11 @@ class ContentSettings(BaseSettings):
     segments_max: int = 15
     split_method: str = "paragraph"
     script_default_style: str = "conversational"
+
+
+class TTSSettings(BaseSettings):
+    icl_max_chars: int = 500       # ICL 声音复刻模式每段最大字符数
+    standard_max_chars: int = 2000  # 标准 TTS 每段最大字符数
 
 
 class TaskSettings(BaseSettings):
@@ -112,8 +126,10 @@ class Settings(BaseSettings):
     output: OutputSettings = OutputSettings(
         **{k: v for k, v in _yaml.get("output", {}).items() if k != "video_quality"}
     )
+    asr: ASRSettings = ASRSettings(**_yaml.get("asr", {}))
     subtitles: SubtitleSettings = SubtitleSettings(**_yaml.get("subtitles", {}))
     content: ContentSettings = ContentSettings()
+    tts: TTSSettings = TTSSettings(**_yaml.get("tts", {}))
     tasks: TaskSettings = TaskSettings(**_yaml.get("tasks", {}))
     prompts: PromptSettings = PromptSettings(**_yaml.get("prompts", {}))
 

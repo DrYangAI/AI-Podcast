@@ -18,12 +18,13 @@ from .script_service import ScriptService
 from .audio_service import AudioService
 from .video_service import VideoService
 from .portrait_service import PortraitCompositeService
+from .publish_service import PublishService
 
 logger = logging.getLogger(__name__)
 
 
 class PipelineService:
-    """Orchestrates the 8-step content-to-video pipeline."""
+    """Orchestrates the 9-step content-to-video pipeline."""
 
     STEP_HANDLERS = {
         "article_generation": "_run_article_generation",
@@ -33,14 +34,16 @@ class PipelineService:
         "tts_audio": "_run_tts_audio",
         "video_composition": "_run_video_composition",
         "portrait_composite": "_run_portrait_composite",
+        "publish_copy": "_run_publish_copy",
     }
 
     async def run_pipeline(self, project_id: str, from_step: str | None = None,
                             provider_overrides: dict[str, str] | None = None):
         """Run the full pipeline or from a specific step."""
         async with async_session_factory() as db:
-            # 确保旧项目有 portrait_composite 步骤
+            # 确保旧项目有 portrait_composite 和 publish_copy 步骤
             await self._ensure_portrait_step(db, project_id)
+            await self._ensure_publish_step(db, project_id)
 
             steps = await self._get_steps(db, project_id)
             if not steps:
@@ -175,6 +178,11 @@ class PipelineService:
         service = PortraitCompositeService()
         await service.compose_portrait(project_id)
 
+    async def _run_publish_copy(self, project_id: str,
+                                  provider_overrides: dict[str, str] | None = None):
+        service = PublishService()
+        await service.generate_publish_assets(project_id, provider_overrides)
+
     async def _ensure_portrait_step(self, db: AsyncSession, project_id: str):
         """确保旧项目也有 portrait_composite 步骤（向后兼容）。"""
         steps = await self._get_steps(db, project_id)
@@ -184,6 +192,20 @@ class PipelineService:
                 project_id=project_id,
                 step_name="portrait_composite",
                 step_order=7,
+                status="pending",
+            )
+            db.add(new_step)
+            await db.commit()
+
+    async def _ensure_publish_step(self, db: AsyncSession, project_id: str):
+        """确保旧项目也有 publish_copy 步骤（向后兼容）。"""
+        steps = await self._get_steps(db, project_id)
+        step_names = {s.step_name for s in steps}
+        if "publish_copy" not in step_names:
+            new_step = PipelineStep(
+                project_id=project_id,
+                step_name="publish_copy",
+                step_order=8,
                 status="pending",
             )
             db.add(new_step)

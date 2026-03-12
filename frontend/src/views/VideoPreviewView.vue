@@ -7,6 +7,7 @@ import { pipelineApi } from '../api/pipeline'
 import { utilsApi } from '../api/utils'
 import { useProjectStore } from '../stores/project'
 import type { VideoOutput } from '../types/project'
+import { formatDateTime } from '../utils/date'
 
 const route = useRoute()
 const store = useProjectStore()
@@ -289,12 +290,7 @@ function formatDuration(seconds: number | null) {
   return `${m}:${s.toString().padStart(2, '0')}`
 }
 
-function formatTime(dateStr: string) {
-  return new Date(dateStr).toLocaleString('zh-CN', {
-    month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit',
-  })
-}
+// formatTime removed — use shared formatDateTime from utils/date
 </script>
 
 <template>
@@ -373,7 +369,7 @@ function formatTime(dateStr: string) {
         <el-descriptions-item label="比例">{{ activeVideo.aspect_ratio }}</el-descriptions-item>
         <el-descriptions-item label="模板">{{ activeVideo.template_used }}</el-descriptions-item>
         <el-descriptions-item label="字幕">{{ activeVideo.has_subtitles ? '有' : '无' }}</el-descriptions-item>
-        <el-descriptions-item label="生成时间">{{ formatTime(activeVideo.created_at) }}</el-descriptions-item>
+        <el-descriptions-item label="生成时间">{{ formatDateTime(activeVideo.created_at) }}</el-descriptions-item>
       </el-descriptions>
     </el-card>
 
@@ -404,7 +400,7 @@ function formatTime(dateStr: string) {
         </el-table-column>
         <el-table-column prop="template_used" label="模板" width="100" />
         <el-table-column label="生成时间">
-          <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
+          <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
         </el-table-column>
         <el-table-column label="" width="60">
           <template #default="{ row }">

@@ -51,6 +51,7 @@ class VideoComposer:
         template_name: str = "slideshow",
         subtitle_config: dict | None = None,
         video_quality: dict | None = None,
+        external_srt_path: Path | None = None,
         progress_callback=None,
     ) -> Path:
         template = TEMPLATES.get(template_name, TEMPLATES["slideshow"])
@@ -79,14 +80,19 @@ class VideoComposer:
             subtitle_path = None
             cfg = subtitle_config or {}
             if cfg.get("enabled", True):
-                subtitle_path = temp_dir / "subtitles.srt"
-                self.subtitle_renderer.generate_srt(
-                    segments=segments,
-                    durations=durations,
-                    output_path=subtitle_path,
-                    max_chars_per_line=cfg.get("max_chars_per_line", 20),
-                    max_lines=cfg.get("max_lines", 2),
-                )
+                if external_srt_path and external_srt_path.exists():
+                    # Use ASR-generated SRT with precise timing
+                    subtitle_path = external_srt_path
+                else:
+                    # Fallback: proportional timing
+                    subtitle_path = temp_dir / "subtitles.srt"
+                    self.subtitle_renderer.generate_srt(
+                        segments=segments,
+                        durations=durations,
+                        output_path=subtitle_path,
+                        max_chars_per_line=cfg.get("max_chars_per_line", 20),
+                        max_lines=cfg.get("max_lines", 2),
+                    )
 
             # 5. Build subtitle style for FFmpeg ASS format
             font_color = cfg.get("font_color", "#FFFFFF")

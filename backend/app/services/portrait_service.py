@@ -262,28 +262,45 @@ class PortraitCompositeService:
         return args
 
     async def _generate_srt(self, project_id: str, settings) -> Path | None:
-        """Generate SRT file if not available from step 7.
+        """Generate SRT file for portrait subtitles.
 
-        Uses Script (口播稿) content for subtitles so they match the TTS narration.
-        Falls back to Segment content if no script is available.
+        Priority: ASR (precise timing) → proportional fallback.
         """
         async with async_session_factory() as db:
+            result = await db.execute(
+                select(AudioAsset).where(AudioAsset.project_id == project_id)
+            )
+            audio = result.scalar_one_or_none()
+            if not audio or not audio.file_path:
+                return None
+
+            srt_dir = Path(settings.storage.base_dir) / "subtitles" / project_id
+            srt_dir.mkdir(parents=True, exist_ok=True)
+            srt_path = srt_dir / "portrait_subtitles.srt"
+
+            # Try ASR-based precise subtitles
+            from .asr_service import transcribe_and_generate_srt
+            asr_result = await transcribe_and_generate_srt(
+                audio_path=Path(audio.file_path),
+                output_path=srt_path,
+                max_chars_per_line=settings.subtitles.max_chars_per_line,
+            )
+            if asr_result:
+                return asr_result
+
+            # Fallback: proportional timing from script text
+            if not audio.duration:
+                return None
+
             result = await db.execute(
                 select(Segment)
                 .where(Segment.project_id == project_id)
                 .order_by(Segment.segment_order)
             )
             segments = list(result.scalars().all())
-
-            result = await db.execute(
-                select(AudioAsset).where(AudioAsset.project_id == project_id)
-            )
-            audio = result.scalar_one_or_none()
-
-            if not segments or not audio or not audio.duration:
+            if not segments:
                 return None
 
-            # Try to use script (口播稿) content for subtitles
             result = await db.execute(
                 select(Script).where(Script.project_id == project_id)
             )
@@ -295,14 +312,9 @@ class PortraitCompositeService:
             if script_paragraphs and len(script_paragraphs) >= len(segments):
                 segment_texts = script_paragraphs[:len(segments)]
             else:
-                # Fallback to segment content
                 segment_texts = [s.content for s in segments]
 
             durations = calculate_segment_durations(segment_texts, audio.duration)
-
-            srt_dir = Path(settings.storage.base_dir) / "subtitles" / project_id
-            srt_dir.mkdir(parents=True, exist_ok=True)
-            srt_path = srt_dir / "portrait_subtitles.srt"
 
             renderer = SubtitleRenderer()
             renderer.generate_srt(

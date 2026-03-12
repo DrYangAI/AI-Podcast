@@ -42,6 +42,14 @@ class SubtitleRenderer:
         output_path.write_text(srt_content, encoding="utf-8")
         return output_path
 
+    def generate_srt_from_entries(self, entries: list[SubtitleEntry],
+                                    output_path: Path) -> Path:
+        """Write SRT file from pre-timed SubtitleEntry list (e.g. from ASR)."""
+        srt_content = self._format_srt(entries)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(srt_content, encoding="utf-8")
+        return output_path
+
     def _split_text(self, text: str, max_chars: int, max_lines: int) -> list[str]:
         text = text.strip()
         if not text:

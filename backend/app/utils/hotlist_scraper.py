@@ -105,18 +105,48 @@ async def _scrape_toutiao(client: httpx.AsyncClient) -> list[HotTopic]:
     return topics
 
 
+async def _scrape_tencent(client: httpx.AsyncClient) -> list[HotTopic]:
+    """Scrape Tencent News hot ranking (腾讯新闻热点榜)."""
+    resp = await client.get(
+        "https://r.inews.qq.com/gw/event/hot_ranking_list?page_size=51",
+        headers=HEADERS,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    topics = []
+    newslist = data.get("idlist", [{}])[0].get("newslist", [])
+    for i, item in enumerate(newslist):
+        if i == 0:
+            # First item is a description, not a news topic
+            continue
+        title = item.get("title", "")
+        if not title:
+            continue
+        hot_event = item.get("hotEvent", {})
+        topics.append(HotTopic(
+            title=title,
+            url=item.get("url"),
+            source="tencent",
+            rank=i,
+            heat=str(hot_event.get("hotScore", "")),
+        ))
+    return topics
+
+
 # --- Registry ---
 
 SCRAPERS: dict[str, callable] = {
     "weibo": _scrape_weibo,
     "baidu": _scrape_baidu,
     "toutiao": _scrape_toutiao,
+    "tencent": _scrape_tencent,
 }
 
 SOURCE_NAMES: dict[str, str] = {
     "weibo": "微博热搜",
     "baidu": "百度热搜",
     "toutiao": "头条热榜",
+    "tencent": "腾讯新闻",
 }
 
 
