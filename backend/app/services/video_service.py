@@ -17,6 +17,8 @@ from .audio_service import clean_script_for_tts
 
 logger = logging.getLogger(__name__)
 
+logger = logging.getLogger(__name__)
+
 
 def _split_script_to_paragraphs(script, num_segments: int) -> list[str] | None:
     """Split the Script content into paragraphs matching the number of segments.
@@ -143,8 +145,26 @@ class VideoService:
             if not audio or audio.status != "completed":
                 raise ValueError("No completed audio found")
 
+            # Check if segments have per-segment script_text and actual durations
+            has_segment_scripts = all(seg.script_text for seg in segments)
+            has_segment_durations = all(
+                seg.duration_hint and seg.duration_hint > 0 for seg in segments
+            )
+
+            if has_segment_scripts:
+                logger.info("Using per-segment script_text for subtitles")
+            else:
+                logger.info("Falling back to _split_script_to_paragraphs for subtitles")
+
+            if has_segment_durations:
+                actual_durations = [seg.duration_hint for seg in segments]
+                logger.info("Using actual per-segment durations: %s",
+                            [f"{d:.1f}s" for d in actual_durations])
+
             # Build subtitle texts from script (口播稿) so subtitles match narration
-            script_paragraphs = _split_script_to_paragraphs(script, len(segments)) if script else None
+            script_paragraphs = None
+            if not has_segment_scripts:
+                script_paragraphs = _split_script_to_paragraphs(script, len(segments)) if script else None
 
             # Collect image paths in segment order
             image_paths = []
@@ -153,8 +173,10 @@ class VideoService:
                 img = images.get(segment.id)
                 if img and img.file_path:
                     image_paths.append(Path(img.file_path))
-                    # Use script paragraph if available, otherwise fall back to segment
-                    if script_paragraphs and i < len(script_paragraphs):
+                    # Priority: segment.script_text > script_paragraphs > segment.content
+                    if has_segment_scripts:
+                        segment_texts.append(segment.script_text)
+                    elif script_paragraphs and i < len(script_paragraphs):
                         segment_texts.append(script_paragraphs[i])
                     else:
                         segment_texts.append(segment.content)
@@ -191,6 +213,7 @@ class VideoService:
                 aspect_ratio=effective_aspect_ratio,
                 template_name=project.video_template,
                 audio_duration=audio.duration,
+                segment_durations=actual_durations if has_segment_durations else None,
                 subtitle_config={
                     "enabled": effective_subtitle_enabled,
                     "font_size": getattr(project, "subtitle_font_size", 18),
@@ -221,7 +244,7 @@ class VideoService:
                 srt_dir.mkdir(parents=True, exist_ok=True)
                 srt_path = srt_dir / "portrait_subtitles.srt"
 
-                durations = calculate_segment_durations(segment_texts, audio.duration)
+                durations = actual_durations if has_segment_durations else calculate_segment_durations(segment_texts, audio.duration)
                 renderer = SubtitleRenderer()
                 renderer.generate_srt(
                     segments=segment_texts,

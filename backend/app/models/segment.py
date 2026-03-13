@@ -19,6 +19,8 @@ class Segment(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     image_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     duration_hint: Mapped[float | None] = mapped_column(Float, nullable=True)
+    script_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    audio_file: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 

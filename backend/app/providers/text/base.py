@@ -57,6 +57,17 @@ class TextProvider(BaseProvider):
             temperature=0.5,
         ))
 
+    async def generate_segmented_script(self, segments: list[str],
+                                         style: str = "conversational") -> TextGenerationResponse:
+        """Generate oral broadcast script with per-segment markers."""
+        prompt = self._build_segmented_script_prompt(segments, style)
+        return await self.generate(TextGenerationRequest(
+            prompt=prompt,
+            system_prompt=self._get_script_system_prompt(),
+            temperature=0.5,
+            max_tokens=8192,
+        ))
+
     async def generate_image_prompts(self, segments: list[str],
                                        language: str = "en",
                                        aspect_ratio: str = "16:9") -> list[str]:
@@ -106,6 +117,62 @@ class TextProvider(BaseProvider):
             f"- 【重要】输出纯文本,不要使用任何Markdown格式(如**加粗**、# 标题、- 列表等)\n"
             f"- 【重要】不要添加任何括号注释或舞台指导(如「（轻松开场）」「（停顿）」等),直接输出可朗读的文字"
         )
+
+    def _build_segmented_script_prompt(self, segments: list[str], style: str) -> str:
+        n = len(segments)
+        numbered = "\n\n".join(f"[段落{i+1}]:\n{seg}" for i, seg in enumerate(segments))
+        markers = "、".join(f"[SEGMENT_{i+1}]" for i in range(n))
+        return (
+            f"请将以下{n}个内容段落分别改写为口播稿。\n\n"
+            f"{numbered}\n\n"
+            f"要求:\n"
+            f"- 严格输出{n}个段落,每个段落前用标记 {markers} 标识\n"
+            f"- 第一个段落需要有自然的开场（如问候听众）,最后一个段落需要有收尾总结\n"
+            f"- 相邻段落之间要有自然的过渡衔接\n"
+            f"- 口语化表达,适合朗读\n"
+            f"- 保持专业性但更加亲切\n"
+            f"- 适当添加过渡词和语气词\n"
+            f"- 风格: {style}\n"
+            f"- 【重要】输出纯文本,不要使用任何Markdown格式\n"
+            f"- 【重要】不要添加任何括号注释或舞台指导,直接输出可朗读的文字"
+        )
+
+    @staticmethod
+    def parse_segmented_script(content: str, expected_count: int) -> list[str]:
+        """Parse LLM output with [SEGMENT_N] markers into a list of segment texts."""
+        parts = re.split(r'\[SEGMENT_\d+\]\s*:?\s*', content)
+        # First element is text before any marker (usually empty), skip it
+        segments = [p.strip() for p in parts[1:] if p.strip()]
+
+        if len(segments) == expected_count:
+            return segments
+
+        # Fallback: split by double newlines and distribute evenly
+        paragraphs = [p.strip() for p in re.split(r'\n\s*\n', content) if p.strip()]
+        # Remove any marker lines
+        paragraphs = [re.sub(r'\[SEGMENT_\d+\]\s*:?\s*', '', p).strip()
+                       for p in paragraphs]
+        paragraphs = [p for p in paragraphs if p]
+
+        if len(paragraphs) <= expected_count:
+            return paragraphs
+
+        # Greedy merge by character count
+        total_chars = sum(len(p) for p in paragraphs)
+        target = total_chars / expected_count
+        merged = []
+        group, chars = [], 0
+        for p in paragraphs:
+            group.append(p)
+            chars += len(p)
+            remaining_segs = expected_count - len(merged) - 1
+            remaining_paras = len(paragraphs) - (sum(len(g) for g in merged) + len(group)) if merged else len(paragraphs) - len(group)
+            if remaining_segs > 0 and chars >= target:
+                merged.append('\n'.join(group))
+                group, chars = [], 0
+        if group:
+            merged.append('\n'.join(group))
+        return merged
 
     def _get_script_system_prompt(self) -> str:
         return (

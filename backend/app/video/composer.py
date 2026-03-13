@@ -54,6 +54,7 @@ class VideoComposer:
         external_srt_path: Path | None = None,
         progress_callback=None,
         audio_duration: float | None = None,
+        segment_durations: list[float] | None = None,
     ) -> Path:
         template = TEMPLATES.get(template_name, TEMPLATES["slideshow"])
         w, h = template.get_resolution(aspect_ratio)
@@ -75,8 +76,11 @@ class VideoComposer:
             if audio_duration <= 0:
                 raise ValueError("Could not determine audio duration")
 
-            # 3. Calculate segment durations
-            durations = calculate_segment_durations(segments, audio_duration)
+            # 3. Calculate segment durations (use actual if provided)
+            if segment_durations and len(segment_durations) == len(processed_images):
+                durations = segment_durations
+            else:
+                durations = calculate_segment_durations(segments, audio_duration)
 
             # 4. Generate subtitles
             subtitle_path = None

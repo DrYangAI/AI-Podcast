@@ -8,9 +8,10 @@ from pathlib import Path
 from sqlalchemy import select
 
 from ..database import async_session_factory
-from ..models import Project, Script, AudioAsset, ProviderConfig, VoiceClone
+from ..models import Project, Script, Segment, AudioAsset, ProviderConfig, VoiceClone
 from ..providers.base import ProviderType
 from ..providers.registry import ProviderRegistry
+from ..providers.tts.base import TTSProvider
 from ..config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -132,28 +133,85 @@ class AudioService:
                 voice_id = extra_config.get("voice", "") if extra_config else ""
                 voice_display = voice_id
 
-            # Clean script text: remove annotations and markdown formatting
-            clean_text = clean_script_for_tts(script.content)
-            logger.info("Cleaned script for TTS: removed %d chars of annotations/formatting",
-                        len(script.content) - len(clean_text))
-
             max_chunk = settings.tts.icl_max_chars if use_icl else settings.tts.standard_max_chars
-            response = await tts_provider.synthesize_script(
-                script=clean_text,
-                voice_id=voice_id,
-                output_path=output_path,
-                use_icl=use_icl,
-                max_chunk_chars=max_chunk,
+
+            # Check if segments have per-segment script_text
+            seg_result = await db.execute(
+                select(Segment)
+                .where(Segment.project_id == project_id)
+                .order_by(Segment.segment_order)
             )
+            segments = list(seg_result.scalars().all())
+            has_segment_scripts = segments and all(seg.script_text for seg in segments)
+
+            if has_segment_scripts:
+                # === New path: per-segment TTS synthesis ===
+                logger.info("Per-segment TTS: %d segments", len(segments))
+                segment_audio_paths = []
+                total_duration = 0.0
+
+                for seg in segments:
+                    seg_text = clean_script_for_tts(seg.script_text)
+                    if not seg_text.strip():
+                        logger.warning("Segment %d has empty script_text, skipping", seg.segment_order)
+                        continue
+
+                    seg_dir = output_dir / "segments" / f"seg_{seg.segment_order:03d}"
+                    seg_dir.mkdir(parents=True, exist_ok=True)
+                    seg_output = seg_dir / "speech.mp3"
+
+                    logger.info("Synthesizing segment %d: %d chars", seg.segment_order, len(seg_text))
+                    seg_response = await tts_provider.synthesize_script(
+                        script=seg_text,
+                        voice_id=voice_id,
+                        output_path=seg_output,
+                        use_icl=use_icl,
+                        max_chunk_chars=max_chunk,
+                    )
+
+                    seg.audio_file = str(seg_output)
+                    seg.duration_hint = seg_response.duration
+                    total_duration += seg_response.duration
+                    segment_audio_paths.append(seg_output)
+                    logger.info("Segment %d done: %.1fs", seg.segment_order, seg_response.duration)
+
+                # Concatenate all segment audios into final speech.mp3
+                if len(segment_audio_paths) > 1:
+                    total_duration = await TTSProvider._concat_audio(
+                        segment_audio_paths, output_path
+                    )
+                elif segment_audio_paths:
+                    import shutil
+                    shutil.copy2(segment_audio_paths[0], output_path)
+
+                sample_rate = 24000  # default
+                logger.info("Per-segment TTS complete: %d segments, total %.1fs",
+                            len(segment_audio_paths), total_duration)
+
+            else:
+                # === Legacy path: monolithic TTS synthesis ===
+                clean_text = clean_script_for_tts(script.content)
+                logger.info("Cleaned script for TTS: removed %d chars of annotations/formatting",
+                            len(script.content) - len(clean_text))
+
+                response = await tts_provider.synthesize_script(
+                    script=clean_text,
+                    voice_id=voice_id,
+                    output_path=output_path,
+                    use_icl=use_icl,
+                    max_chunk_chars=max_chunk,
+                )
+                total_duration = response.duration
+                sample_rate = response.sample_rate
 
             # Save or update audio asset
             result = await db.execute(select(AudioAsset).where(AudioAsset.project_id == project_id))
             audio = result.scalar_one_or_none()
 
             if audio:
-                audio.file_path = str(response.file_path)
-                audio.duration = response.duration
-                audio.sample_rate = response.sample_rate
+                audio.file_path = str(output_path)
+                audio.duration = total_duration
+                audio.sample_rate = sample_rate
                 audio.provider_id = tts_config.id
                 audio.voice_id = voice_display or voice_id
                 audio.is_manual = False
@@ -161,9 +219,9 @@ class AudioService:
             else:
                 audio = AudioAsset(
                     project_id=project_id,
-                    file_path=str(response.file_path),
-                    duration=response.duration,
-                    sample_rate=response.sample_rate,
+                    file_path=str(output_path),
+                    duration=total_duration,
+                    sample_rate=sample_rate,
                     provider_id=tts_config.id,
                     voice_id=voice_display or voice_id,
                     is_manual=False,

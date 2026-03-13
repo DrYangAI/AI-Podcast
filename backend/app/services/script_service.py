@@ -6,9 +6,10 @@ import logging
 from sqlalchemy import select
 
 from ..database import async_session_factory
-from ..models import Project, Article, Script, ProviderConfig
+from ..models import Project, Article, Script, Segment, ProviderConfig
 from ..providers.base import ProviderType
 from ..providers.registry import ProviderRegistry
+from ..providers.text.base import TextProvider
 from ..config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -51,25 +52,63 @@ class ScriptService:
                 config=extra_config,
             )
 
-            response = await text_provider.generate_script(
-                article=article.content,
-                style=settings.content.script_default_style,
+            # Load segments for per-segment script generation
+            seg_result = await db.execute(
+                select(Segment)
+                .where(Segment.project_id == project_id)
+                .order_by(Segment.segment_order)
             )
+            segments = list(seg_result.scalars().all())
+
+            style = settings.content.script_default_style
+
+            if segments:
+                # New path: generate per-segment script
+                segment_contents = [seg.content for seg in segments]
+                response = await text_provider.generate_segmented_script(
+                    segments=segment_contents,
+                    style=style,
+                )
+                # Parse into per-segment texts
+                segment_scripts = TextProvider.parse_segmented_script(
+                    response.content, len(segments)
+                )
+                # Write per-segment script_text
+                for i, seg in enumerate(segments):
+                    if i < len(segment_scripts):
+                        seg.script_text = segment_scripts[i]
+                    else:
+                        seg.script_text = seg.content  # fallback to original content
+                # Full script = concatenation of per-segment scripts
+                full_script = "\n\n".join(
+                    seg.script_text for seg in segments if seg.script_text
+                )
+                logger.info(
+                    "Generated segmented script: %d segments, %d chars",
+                    len(segments), len(full_script),
+                )
+            else:
+                # Legacy path: generate from full article
+                response = await text_provider.generate_script(
+                    article=article.content,
+                    style=style,
+                )
+                full_script = response.content
 
             # Save or update script
             result = await db.execute(select(Script).where(Script.project_id == project_id))
             script = result.scalar_one_or_none()
 
             if script:
-                script.content = response.content
+                script.content = full_script
                 script.provider_id = provider_config.id
                 script.is_manual = False
                 script.version += 1
             else:
                 script = Script(
                     project_id=project_id,
-                    content=response.content,
-                    style=settings.content.script_default_style,
+                    content=full_script,
+                    style=style,
                     provider_id=provider_config.id,
                     is_manual=False,
                 )
