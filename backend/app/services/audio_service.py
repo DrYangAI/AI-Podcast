@@ -184,6 +184,30 @@ class AudioService:
                     import shutil
                     shutil.copy2(segment_audio_paths[0], output_path)
 
+                # Write chunks.json for chunk management UI compatibility
+                chunks_dir = output_dir / "chunks"
+                chunks_dir.mkdir(parents=True, exist_ok=True)
+                chunk_entries = []
+                active_segments = [s for s in segments if s.script_text and s.script_text.strip()]
+                for idx, seg in enumerate(active_segments):
+                    chunk_file = f"chunk_{idx:03d}.mp3"
+                    seg_audio = Path(seg.audio_file) if seg.audio_file else None
+                    if seg_audio and seg_audio.exists():
+                        import shutil as _shutil
+                        _shutil.copy2(seg_audio, chunks_dir / chunk_file)
+                    seg_clean = clean_script_for_tts(seg.script_text)
+                    chunk_entries.append({
+                        "index": idx,
+                        "text": seg_clean,
+                        "file": chunk_file,
+                        "duration": seg.duration_hint or 0.0,
+                        "speed": len(seg_clean) / seg.duration_hint if seg.duration_hint else 0.0,
+                        "chars": len(seg_clean),
+                    })
+                TTSProvider._save_chunks_json(chunks_dir, chunk_entries, voice_id, use_icl,
+                                              voice_display=voice_display or voice_id)
+                logger.info("Wrote chunks.json with %d segment-based chunks", len(chunk_entries))
+
                 sample_rate = 24000  # default
                 logger.info("Per-segment TTS complete: %d segments, total %.1fs",
                             len(segment_audio_paths), total_duration)
@@ -255,6 +279,7 @@ class AudioService:
 
         chunk = chunks[chunk_index]
         voice_id = meta["voice_id"]
+        voice_display = meta.get("voice_display", voice_id)
         use_icl = meta.get("use_icl", False)
 
         # Get TTS provider
@@ -262,6 +287,21 @@ class AudioService:
             tts_config = await self._get_provider(db, "tts")
             if not tts_config:
                 raise ValueError("No TTS provider configured")
+
+            # Resolve voice_id: if it's a display name like "clone:XXX",
+            # look up the actual speaker_id from VoiceClone table
+            if voice_id.startswith("clone:") and use_icl:
+                clone_name = voice_id[len("clone:"):]
+                clone_result = await db.execute(
+                    select(VoiceClone).where(VoiceClone.name == clone_name)
+                )
+                voice_clone = clone_result.scalar_one_or_none()
+                if voice_clone and voice_clone.speaker_id:
+                    logger.info("Resolved clone display name '%s' to speaker_id '%s'",
+                                clone_name, voice_clone.speaker_id)
+                    voice_id = voice_clone.speaker_id
+                else:
+                    raise ValueError(f"Cannot resolve cloned voice '{clone_name}' - not found or missing speaker_id")
 
             api_key = tts_config.api_key
             if not api_key:
@@ -300,8 +340,29 @@ class AudioService:
         chunk["speed"] = speed
         chunks[chunk_index] = chunk
 
-        # Save updated chunks.json
-        TTSProvider._save_chunks_json(chunks_dir, chunks, voice_id, use_icl)
+        # Save updated chunks.json (preserve display name, store real speaker_id)
+        TTSProvider._save_chunks_json(chunks_dir, chunks, voice_id, use_icl,
+                                      voice_display=voice_display)
+
+        # Sync back to segment if in per-segment mode
+        async with async_session_factory() as db:
+            seg_result = await db.execute(
+                select(Segment)
+                .where(Segment.project_id == project_id)
+                .order_by(Segment.segment_order)
+            )
+            segments = list(seg_result.scalars().all())
+            if segments and chunk_index < len(segments):
+                seg = segments[chunk_index]
+                if seg.script_text:
+                    # Copy regenerated audio back to segment dir
+                    seg_audio = Path(seg.audio_file) if seg.audio_file else None
+                    if seg_audio:
+                        import shutil as _shutil
+                        _shutil.copy2(chunk_path, seg_audio)
+                    seg.duration_hint = dur
+                    await db.commit()
+                    logger.info("Synced regenerated chunk %d back to segment", chunk_index)
 
         return chunk
 
@@ -326,7 +387,7 @@ class AudioService:
 
         duration = await TTSProvider._concat_audio(chunk_paths, output_path)
 
-        # Update AudioAsset in database
+        # Update AudioAsset and segment durations in database
         async with async_session_factory() as db:
             result = await db.execute(
                 select(AudioAsset).where(AudioAsset.project_id == project_id)
@@ -336,7 +397,20 @@ class AudioService:
                 audio.file_path = str(output_path)
                 audio.duration = duration
                 audio.status = "completed"
-                await db.commit()
+
+            # Sync chunk durations back to segments
+            seg_result = await db.execute(
+                select(Segment)
+                .where(Segment.project_id == project_id)
+                .order_by(Segment.segment_order)
+            )
+            segments = list(seg_result.scalars().all())
+            if segments and segments[0].script_text:
+                for i, seg in enumerate(segments):
+                    if i < len(meta["chunks"]):
+                        seg.duration_hint = meta["chunks"][i].get("duration", 0)
+
+            await db.commit()
 
         return {"file_path": str(output_path), "duration": duration}
 

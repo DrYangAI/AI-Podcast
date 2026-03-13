@@ -343,7 +343,8 @@ async function fetchChunks() {
 }
 
 function getChunkAudioUrl(chunk: AudioChunk) {
-  return '/' + chunk.file_url + '?t=' + cacheBuster.value
+  const url = chunk.file_url.startsWith('/') ? chunk.file_url : '/' + chunk.file_url
+  return url + '?t=' + cacheBuster.value
 }
 
 function chunkSpeedDeviation(chunk: AudioChunk): number {

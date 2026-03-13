@@ -183,11 +183,13 @@ class TTSProvider(BaseProvider):
 
     @staticmethod
     def _save_chunks_json(chunks_dir: Path, chunks: list[dict],
-                          voice_id: str, use_icl: bool):
+                          voice_id: str, use_icl: bool,
+                          voice_display: str = ""):
         """Write chunks.json metadata to the chunks directory."""
         meta = {
             "chunks": chunks,
             "voice_id": voice_id,
+            "voice_display": voice_display or voice_id,
             "use_icl": use_icl,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }

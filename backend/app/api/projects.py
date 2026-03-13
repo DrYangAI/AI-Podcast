@@ -477,7 +477,7 @@ async def get_audio_chunks(project_id: str):
 
     return AudioChunksListResponse(
         chunks=chunk_responses,
-        voice_id=meta.get("voice_id", ""),
+        voice_id=meta.get("voice_display", meta.get("voice_id", "")),
         use_icl=meta.get("use_icl", False),
     )
 
