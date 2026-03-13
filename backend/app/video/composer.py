@@ -53,6 +53,7 @@ class VideoComposer:
         video_quality: dict | None = None,
         external_srt_path: Path | None = None,
         progress_callback=None,
+        audio_duration: float | None = None,
     ) -> Path:
         template = TEMPLATES.get(template_name, TEMPLATES["slideshow"])
         w, h = template.get_resolution(aspect_ratio)
@@ -68,8 +69,9 @@ class VideoComposer:
                 self.image_processor.prepare_for_video(img_path, w, h, processed_path)
                 processed_images.append(processed_path)
 
-            # 2. Get audio duration
-            audio_duration = await self.ffmpeg.get_duration(audio_path)
+            # 2. Get audio duration (prefer passed-in value from DB, fallback to ffprobe)
+            if not audio_duration or audio_duration <= 0:
+                audio_duration = await self.ffmpeg.get_duration(audio_path)
             if audio_duration <= 0:
                 raise ValueError("Could not determine audio duration")
 
@@ -120,6 +122,7 @@ class VideoComposer:
                 audio_codec=quality.get("audio_codec", "aac"),
                 crf=quality.get("crf", 23),
                 subtitle_style=subtitle_style,
+                audio_duration=audio_duration,
             )
 
             # 7. Execute FFmpeg

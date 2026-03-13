@@ -38,10 +38,29 @@ def _split_script_to_paragraphs(script, num_segments: int) -> list[str] | None:
     if len(paragraphs) == num_segments:
         return paragraphs
 
-    # If more paragraphs than segments, merge extras into last paragraph
+    # If more paragraphs than segments, distribute evenly by character count
     if len(paragraphs) > num_segments:
-        merged = paragraphs[:num_segments - 1]
-        merged.append('\n'.join(paragraphs[num_segments - 1:]))
+        # Greedy merge: assign paragraphs to segments so total chars are balanced
+        total_chars = sum(len(p) for p in paragraphs)
+        target_per_segment = total_chars / num_segments
+        merged = []
+        current_group = []
+        current_chars = 0
+        seg_idx = 0
+        for p in paragraphs:
+            current_group.append(p)
+            current_chars += len(p)
+            # Move to next segment if we've reached the target (but keep at least 1 for remaining)
+            remaining_segments = num_segments - seg_idx - 1
+            remaining_paras = len(paragraphs) - (len(merged) + len(current_group))  # not yet consumed
+            if remaining_segments > 0 and current_chars >= target_per_segment and remaining_paras >= remaining_segments:
+                merged.append('\n'.join(current_group))
+                current_group = []
+                current_chars = 0
+                seg_idx += 1
+        # Append whatever is left as the last segment
+        if current_group:
+            merged.append('\n'.join(current_group))
         return merged
 
     # If fewer paragraphs than segments, try splitting long paragraphs by single newline
@@ -51,8 +70,24 @@ def _split_script_to_paragraphs(script, num_segments: int) -> list[str] | None:
 
     # If still not matching, distribute lines across segments proportionally
     if len(lines) > num_segments:
-        merged = lines[:num_segments - 1]
-        merged.append('\n'.join(lines[num_segments - 1:]))
+        total_chars = sum(len(l) for l in lines)
+        target_per_segment = total_chars / num_segments
+        merged = []
+        current_group = []
+        current_chars = 0
+        seg_idx = 0
+        for l in lines:
+            current_group.append(l)
+            current_chars += len(l)
+            remaining_segments = num_segments - seg_idx - 1
+            remaining_lines = len(lines) - (len(merged) + len(current_group))
+            if remaining_segments > 0 and current_chars >= target_per_segment and remaining_lines >= remaining_segments:
+                merged.append('\n'.join(current_group))
+                current_group = []
+                current_chars = 0
+                seg_idx += 1
+        if current_group:
+            merged.append('\n'.join(current_group))
         return merged
 
     # Fewer lines than segments: pad with empty strings is bad,
@@ -155,6 +190,7 @@ class VideoService:
                 output_path=output_path,
                 aspect_ratio=effective_aspect_ratio,
                 template_name=project.video_template,
+                audio_duration=audio.duration,
                 subtitle_config={
                     "enabled": effective_subtitle_enabled,
                     "font_size": getattr(project, "subtitle_font_size", 18),

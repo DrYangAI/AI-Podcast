@@ -88,7 +88,7 @@ class ContentSettings(BaseSettings):
 
 
 class TTSSettings(BaseSettings):
-    icl_max_chars: int = 500       # ICL 声音复刻模式每段最大字符数
+    icl_max_chars: int = 300       # ICL 声音复刻模式每段最大字符数
     standard_max_chars: int = 2000  # 标准 TTS 每段最大字符数
 
 

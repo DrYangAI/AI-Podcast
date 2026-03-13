@@ -19,6 +19,7 @@ class VideoSpec:
     video_codec: str = "libx264"
     crf: int = 23
     subtitle_style: dict = field(default_factory=dict)
+    audio_duration: float = 0.0
 
 
 class BaseVideoTemplate(ABC):

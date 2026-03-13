@@ -81,7 +81,7 @@ providers:
     tts: "openai_tts"
 
 tts:
-  icl_max_chars: 500
+  icl_max_chars: 300
   standard_max_chars: 2000
 
 tasks:

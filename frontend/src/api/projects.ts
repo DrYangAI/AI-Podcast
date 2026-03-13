@@ -77,6 +77,15 @@ export const projectsApi = {
   getAudio(id: string) {
     return apiClient.get<AudioAsset>(`/projects/${id}/audio`)
   },
+  getAudioChunks(id: string) {
+    return apiClient.get<any>(`/projects/${id}/audio/chunks`)
+  },
+  regenerateAudioChunk(id: string, chunkIndex: number) {
+    return apiClient.post<any>(`/projects/${id}/audio/chunks/${chunkIndex}/regenerate`)
+  },
+  concatenateAudioChunks(id: string) {
+    return apiClient.post<any>(`/projects/${id}/audio/concatenate`)
+  },
 
   // Videos
   getVideos(id: string) {

@@ -69,7 +69,7 @@ class KenBurnsTemplate(BaseVideoTemplate):
             "-crf", str(spec.crf),
             "-preset", "medium",
             "-c:a", spec.audio_codec,
-            "-shortest",
+            "-t", f"{spec.audio_duration:.3f}",
             "-pix_fmt", "yuv420p",
             str(spec.output_path),
         ]

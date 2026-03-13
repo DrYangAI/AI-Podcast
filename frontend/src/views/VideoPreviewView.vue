@@ -209,29 +209,40 @@ async function handlePortraitCompose() {
 
 function startComposePolling(type: 'standard' | 'portrait') {
   if (pollTimer) clearInterval(pollTimer)
+  const stepName = type === 'portrait' ? 'portrait_composite' : 'video_composition'
   pollTimer = setInterval(async () => {
-    await fetchVideos()
-    const targetVideos = type === 'portrait' ? portraitVideos.value : standardVideos.value
-    const latest = targetVideos[targetVideos.length - 1]
-    if (latest && latest.status === 'completed') {
-      activeTab.value = type
-      activeVideoId.value = latest.id
-      cacheBuster.value = Date.now()
-      if (type === 'portrait') {
-        portraitLoading.value = false
-      } else {
-        loading.value = false
+    try {
+      const { data: steps } = await pipelineApi.getStatus(projectId.value)
+      const step = steps.find((s: any) => s.step_name === stepName)
+      if (!step) return
+
+      if (step.status === 'completed') {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+        await fetchVideos()
+        const targetVideos = type === 'portrait' ? portraitVideos.value : standardVideos.value
+        const latest = targetVideos[targetVideos.length - 1]
+        if (latest) {
+          activeTab.value = type
+          activeVideoId.value = latest.id
+        }
+        cacheBuster.value = Date.now()
+        if (type === 'portrait') {
+          portraitLoading.value = false
+        } else {
+          loading.value = false
+        }
+        ElMessage.success(type === 'portrait' ? '竖屏合成完成' : '视频合成完成')
+      } else if (step.status === 'failed') {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+        if (type === 'portrait') {
+          portraitLoading.value = false
+        } else {
+          loading.value = false
+        }
+        ElMessage.error(step.error_message || (type === 'portrait' ? '竖屏合成失败' : '视频合成失败'))
       }
-      if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
-      ElMessage.success(type === 'portrait' ? '竖屏合成完成' : '视频合成完成')
-    } else if (latest && latest.status === 'failed') {
-      if (type === 'portrait') {
-        portraitLoading.value = false
-      } else {
-        loading.value = false
-      }
-      if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
-      ElMessage.error(type === 'portrait' ? '竖屏合成失败' : '视频合成失败')
+    } catch {
+      // Ignore polling errors
     }
   }, 3000)
 }

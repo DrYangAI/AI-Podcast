@@ -174,6 +174,114 @@ class AudioService:
             await db.commit()
             return audio
 
+    async def get_audio_chunks(self, project_id: str) -> dict | None:
+        """Load chunks metadata for a project."""
+        settings = get_settings()
+        chunks_dir = Path(settings.storage.base_dir) / "audio" / project_id / "chunks"
+        from ..providers.tts.base import TTSProvider
+        return TTSProvider.load_chunks_json(chunks_dir)
+
+    async def regenerate_chunk(self, project_id: str, chunk_index: int) -> dict:
+        """Re-synthesize a single chunk and return updated chunk info."""
+        settings = get_settings()
+        chunks_dir = Path(settings.storage.base_dir) / "audio" / project_id / "chunks"
+
+        from ..providers.tts.base import TTSProvider, TTSRequest
+        meta = TTSProvider.load_chunks_json(chunks_dir)
+        if not meta:
+            raise ValueError("No chunks found for this project")
+
+        chunks = meta["chunks"]
+        if chunk_index < 0 or chunk_index >= len(chunks):
+            raise ValueError(f"Chunk index {chunk_index} out of range (0-{len(chunks)-1})")
+
+        chunk = chunks[chunk_index]
+        voice_id = meta["voice_id"]
+        use_icl = meta.get("use_icl", False)
+
+        # Get TTS provider
+        async with async_session_factory() as db:
+            tts_config = await self._get_provider(db, "tts")
+            if not tts_config:
+                raise ValueError("No TTS provider configured")
+
+            api_key = tts_config.api_key
+            if not api_key:
+                key_map = {
+                    "openai_tts": settings.openai_api_key,
+                    "elevenlabs": settings.elevenlabs_api_key,
+                    "doubao_tts": settings.doubao_api_key,
+                    "minimax_tts": settings.minimax_api_key,
+                }
+                api_key = key_map.get(tts_config.provider_key, "")
+
+            extra_config = json.loads(tts_config.config_json) if tts_config.config_json else None
+            tts_provider = ProviderRegistry.instantiate(
+                provider_type=ProviderType.TTS,
+                key=tts_config.provider_key,
+                api_key=api_key,
+                api_base_url=tts_config.api_base_url or "",
+                model_id=tts_config.model_id or "",
+                config=extra_config,
+            )
+
+        # Re-synthesize the chunk
+        chunk_path = chunks_dir / chunk["file"]
+        logger.info("Regenerating chunk %d for project %s (%d chars)",
+                    chunk_index, project_id, chunk["chars"])
+
+        await tts_provider.synthesize(
+            TTSRequest(text=chunk["text"], voice_id=voice_id, use_icl=use_icl),
+            output_path=chunk_path,
+        )
+
+        # Update metadata
+        dur = await TTSProvider._probe_duration(chunk_path)
+        speed = len(chunk["text"]) / dur if dur > 0 else 0.0
+        chunk["duration"] = dur
+        chunk["speed"] = speed
+        chunks[chunk_index] = chunk
+
+        # Save updated chunks.json
+        TTSProvider._save_chunks_json(chunks_dir, chunks, voice_id, use_icl)
+
+        return chunk
+
+    async def concatenate_chunks(self, project_id: str) -> dict:
+        """Re-concatenate all persisted chunks into final audio."""
+        settings = get_settings()
+        audio_dir = Path(settings.storage.base_dir) / "audio" / project_id
+        chunks_dir = audio_dir / "chunks"
+        output_path = audio_dir / "speech.mp3"
+
+        from ..providers.tts.base import TTSProvider
+        meta = TTSProvider.load_chunks_json(chunks_dir)
+        if not meta:
+            raise ValueError("No chunks found for this project")
+
+        chunk_paths = [chunks_dir / c["file"] for c in meta["chunks"]]
+
+        # Verify all chunks exist
+        for p in chunk_paths:
+            if not p.exists():
+                raise ValueError(f"Chunk file missing: {p.name}")
+
+        duration = await TTSProvider._concat_audio(chunk_paths, output_path)
+
+        # Update AudioAsset in database
+        async with async_session_factory() as db:
+            result = await db.execute(
+                select(AudioAsset).where(AudioAsset.project_id == project_id)
+            )
+            audio = result.scalar_one_or_none()
+            if audio:
+                audio.file_path = str(output_path)
+                audio.duration = duration
+                audio.status = "completed"
+                await db.commit()
+
+        return {"file_path": str(output_path), "duration": duration}
+
     async def _get_provider(self, db, provider_type: str,
                              overrides: dict[str, str] | None = None) -> ProviderConfig | None:
         # Priority: 1. Override, 2. DB default, 3. Env var fallback, 4. First available

@@ -19,6 +19,23 @@ const loading = ref(false)
 const cacheBuster = ref(Date.now())
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
+// Chunk state
+interface AudioChunk {
+  index: number
+  text: string
+  file: string
+  file_url: string
+  duration: number
+  speed: number
+  chars: number
+}
+const chunks = ref<AudioChunk[]>([])
+const chunksLoaded = ref(false)
+const chunkRegenerating = ref<number | null>(null)  // index of chunk being regenerated
+const concatenating = ref(false)
+const playingChunkIndex = ref<number | null>(null)
+const chunkAudioRef = ref<HTMLAudioElement | null>(null)
+
 // Voice selection state
 const voiceMode = ref<'preset' | 'cloned'>('preset')
 const presetVoices = ref<PresetVoice[]>([])
@@ -124,7 +141,7 @@ async function loadVoiceOptions() {
 
 onMounted(async () => {
   await Promise.all([fetchAudio(), fetchProject()])
-  await loadVoiceOptions()
+  await Promise.all([loadVoiceOptions(), fetchChunks()])
 })
 
 onUnmounted(() => {
@@ -159,18 +176,27 @@ async function handleGenerateTTS() {
     await pipelineApi.runStep(projectId.value, 'tts_audio')
     ElMessage.success('TTS 语音合成已启动，请稍候...')
 
-    // Poll for completion
+    // Poll pipeline step status (not asset status) to track real progress
     pollTimer = setInterval(async () => {
-      await fetchAudio()
-      if (audio.value && audio.value.status === 'completed') {
-        cacheBuster.value = Date.now()
-        loading.value = false
-        if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
-        ElMessage.success('语音合成完成')
-      } else if (audio.value && audio.value.status === 'failed') {
-        loading.value = false
-        if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
-        ElMessage.error('语音合成失败')
+      try {
+        const { data: steps } = await pipelineApi.getStatus(projectId.value)
+        const step = steps.find((s: any) => s.step_name === 'tts_audio')
+        if (!step) return
+
+        if (step.status === 'completed') {
+          if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+          await fetchAudio()
+          cacheBuster.value = Date.now()
+          loading.value = false
+          await fetchChunks()
+          ElMessage.success('语音合成完成')
+        } else if (step.status === 'failed') {
+          if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+          loading.value = false
+          ElMessage.error(step.error_message || '语音合成失败')
+        }
+      } catch {
+        // Ignore polling errors
       }
     }, 3000)
   } catch {
@@ -301,6 +327,80 @@ function getVoiceGenderLabel(gender: string | null) {
   if (gender === 'female') return '女'
   if (gender === 'male') return '男'
   return ''
+}
+
+// --- Chunk functions ---
+
+async function fetchChunks() {
+  try {
+    const { data } = await projectsApi.getAudioChunks(projectId.value)
+    chunks.value = data.chunks || []
+    chunksLoaded.value = true
+  } catch {
+    chunks.value = []
+    chunksLoaded.value = false
+  }
+}
+
+function getChunkAudioUrl(chunk: AudioChunk) {
+  return '/' + chunk.file_url + '?t=' + cacheBuster.value
+}
+
+function chunkSpeedDeviation(chunk: AudioChunk): number {
+  if (chunks.value.length < 2) return 0
+  const speeds = chunks.value.map(c => c.speed).sort((a, b) => a - b)
+  const median = speeds[Math.floor(speeds.length / 2)]
+  if (median === 0) return 0
+  return Math.abs(chunk.speed - median) / median
+}
+
+function playChunk(index: number) {
+  if (playingChunkIndex.value === index && chunkAudioRef.value) {
+    chunkAudioRef.value.pause()
+    playingChunkIndex.value = null
+    return
+  }
+  playingChunkIndex.value = index
+  const chunk = chunks.value[index]
+  if (!chunk) return
+  // Create or reuse audio element
+  if (!chunkAudioRef.value) {
+    chunkAudioRef.value = new Audio()
+    chunkAudioRef.value.addEventListener('ended', () => {
+      playingChunkIndex.value = null
+    })
+  }
+  chunkAudioRef.value.src = getChunkAudioUrl(chunk)
+  chunkAudioRef.value.play()
+}
+
+async function handleRegenerateChunk(index: number) {
+  chunkRegenerating.value = index
+  try {
+    const { data } = await projectsApi.regenerateAudioChunk(projectId.value, index)
+    // Update local chunk data
+    chunks.value[index] = data
+    cacheBuster.value = Date.now()
+    ElMessage.success(`分段 ${index + 1} 已重新生成`)
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || `重新生成分段 ${index + 1} 失败`)
+  } finally {
+    chunkRegenerating.value = null
+  }
+}
+
+async function handleConcatenate() {
+  concatenating.value = true
+  try {
+    await projectsApi.concatenateAudioChunks(projectId.value)
+    cacheBuster.value = Date.now()
+    await fetchAudio()
+    ElMessage.success('音频已重新拼接')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '拼接失败')
+  } finally {
+    concatenating.value = false
+  }
 }
 </script>
 
@@ -438,6 +538,67 @@ function getVoiceGenderLabel(gender: string | null) {
       </div>
     </el-card>
     <el-empty v-else description="暂无音频，请先生成口播稿后生成 TTS 语音" />
+
+    <!-- 分段列表 -->
+    <el-card v-if="chunksLoaded && chunks.length > 1" style="margin-top: 16px;">
+      <template #header>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-weight: 500;">分段管理 ({{ chunks.length }} 段)</span>
+          <el-button
+            type="primary"
+            size="small"
+            @click="handleConcatenate"
+            :loading="concatenating"
+          >
+            <el-icon><Connection /></el-icon> 重新拼接
+          </el-button>
+        </div>
+      </template>
+
+      <el-text size="small" type="info" style="display: block; margin-bottom: 12px;">
+        试听每个分段，有问题的点"重新生成"，确认都满意后点"重新拼接"更新完整音频
+      </el-text>
+
+      <div
+        v-for="chunk in chunks"
+        :key="chunk.index"
+        style="display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--el-border-color-lighter);"
+        :style="chunkSpeedDeviation(chunk) > 0.3 ? { background: 'var(--el-color-warning-light-9)' } : {}"
+      >
+        <el-tag size="small" :type="chunkSpeedDeviation(chunk) > 0.3 ? 'warning' : 'info'" style="min-width: 28px; text-align: center;">
+          {{ chunk.index + 1 }}
+        </el-tag>
+
+        <div style="flex: 1; min-width: 0;">
+          <div style="font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+            {{ chunk.text.substring(0, 50) }}{{ chunk.text.length > 50 ? '...' : '' }}
+          </div>
+          <div style="font-size: 11px; color: var(--el-text-color-secondary); margin-top: 2px;">
+            {{ chunk.chars }}字 | {{ formatDuration(chunk.duration) }} | {{ chunk.speed.toFixed(1) }}字/秒
+            <el-tag v-if="chunkSpeedDeviation(chunk) > 0.3" size="small" type="warning" style="margin-left: 4px;">
+              语速异常
+            </el-tag>
+          </div>
+        </div>
+
+        <el-button
+          :icon="playingChunkIndex === chunk.index ? 'VideoPause' : 'VideoPlay'"
+          size="small"
+          circle
+          @click="playChunk(chunk.index)"
+          :type="playingChunkIndex === chunk.index ? 'warning' : 'default'"
+        />
+
+        <el-button
+          size="small"
+          @click="handleRegenerateChunk(chunk.index)"
+          :loading="chunkRegenerating === chunk.index"
+          :disabled="chunkRegenerating !== null && chunkRegenerating !== chunk.index"
+        >
+          重新生成
+        </el-button>
+      </div>
+    </el-card>
 
     <!-- 添加克隆声音对话框 -->
     <el-dialog v-model="cloneDialogVisible" title="添加克隆声音" width="520px">

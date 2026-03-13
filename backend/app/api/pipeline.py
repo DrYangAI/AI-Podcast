@@ -101,6 +101,11 @@ async def run_single_step(
     if not step:
         raise HTTPException(status_code=404, detail="Step not found")
 
+    # Set status to in_progress immediately to avoid race condition with polling
+    step.status = "in_progress"
+    step.error_message = None
+    await db.commit()
+
     service = PipelineService()
     background_tasks.add_task(service.run_step, project_id, step_name)
 

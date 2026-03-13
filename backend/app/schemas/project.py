@@ -203,6 +203,22 @@ class AudioAssetResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class AudioChunkResponse(BaseModel):
+    index: int
+    text: str
+    file: str          # filename: chunk_000.mp3
+    file_url: str      # playable URL: /data/audio/{pid}/chunks/chunk_000.mp3
+    duration: float
+    speed: float       # chars per second
+    chars: int
+
+
+class AudioChunksListResponse(BaseModel):
+    chunks: list[AudioChunkResponse]
+    voice_id: str
+    use_icl: bool
+
+
 class VideoOutputResponse(BaseModel):
     id: str
     file_path: str

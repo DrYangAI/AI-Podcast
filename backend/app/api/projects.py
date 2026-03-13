@@ -18,7 +18,7 @@ from ..schemas.project import (
     PipelineStepResponse, ArticleResponse, ArticleUpdate,
     SegmentResponse, SegmentUpdate, ImageAssetResponse, ImageRegenerateRequest,
     ScriptResponse, ScriptUpdate, AudioAssetResponse, VideoOutputResponse,
-    PaginatedResponse,
+    PaginatedResponse, AudioChunkResponse, AudioChunksListResponse,
 )
 from ..schemas.publish import (
     PublishAssetResponse, PublishAssetUpdate,
@@ -447,6 +447,74 @@ async def get_audio(project_id: str, db: AsyncSession = Depends(get_db)):
     if not audio:
         raise HTTPException(status_code=404, detail="Audio not found")
     return AudioAssetResponse.model_validate(audio)
+
+
+# --- Audio chunk endpoints ---
+
+@router.get("/{project_id}/audio/chunks", response_model=AudioChunksListResponse)
+async def get_audio_chunks(project_id: str):
+    """List all TTS chunks with playable URLs."""
+    from ..services.audio_service import AudioService
+    service = AudioService()
+    meta = await service.get_audio_chunks(project_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="No chunks found")
+
+    settings = get_settings()
+    chunks_base = f"{settings.storage.base_dir}/audio/{project_id}/chunks"
+
+    chunk_responses = []
+    for c in meta["chunks"]:
+        chunk_responses.append(AudioChunkResponse(
+            index=c["index"],
+            text=c["text"],
+            file=c["file"],
+            file_url=f"/{chunks_base}/{c['file']}",
+            duration=c.get("duration", 0),
+            speed=c.get("speed", 0),
+            chars=c.get("chars", len(c["text"])),
+        ))
+
+    return AudioChunksListResponse(
+        chunks=chunk_responses,
+        voice_id=meta.get("voice_id", ""),
+        use_icl=meta.get("use_icl", False),
+    )
+
+
+@router.post("/{project_id}/audio/chunks/{chunk_index}/regenerate", response_model=AudioChunkResponse)
+async def regenerate_audio_chunk(project_id: str, chunk_index: int):
+    """Re-synthesize a single chunk."""
+    from ..services.audio_service import AudioService
+    service = AudioService()
+    try:
+        chunk = await service.regenerate_chunk(project_id, chunk_index)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    settings = get_settings()
+    chunks_base = f"{settings.storage.base_dir}/audio/{project_id}/chunks"
+    return AudioChunkResponse(
+        index=chunk["index"],
+        text=chunk["text"],
+        file=chunk["file"],
+        file_url=f"/{chunks_base}/{chunk['file']}",
+        duration=chunk.get("duration", 0),
+        speed=chunk.get("speed", 0),
+        chars=chunk.get("chars", len(chunk["text"])),
+    )
+
+
+@router.post("/{project_id}/audio/concatenate")
+async def concatenate_audio_chunks(project_id: str):
+    """Re-concatenate all persisted chunks into final audio."""
+    from ..services.audio_service import AudioService
+    service = AudioService()
+    try:
+        result = await service.concatenate_chunks(project_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return result
 
 
 # --- Video endpoints ---
