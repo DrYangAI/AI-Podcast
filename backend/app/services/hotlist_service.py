@@ -38,6 +38,8 @@ class HotlistService:
         self,
         sources: list[str] | None = None,
         max_results: int = 15,
+        provider_id: str | None = None,
+        mode: str = "health",
     ) -> tuple[list[HealthTopicRecommendation], int]:
         """Scrape hot topics and filter health-related ones.
 
@@ -54,43 +56,40 @@ class HotlistService:
             return [], 0
 
         # Step 2: AI filtering
+        from .prompt_template_service import PromptTemplateService
+
+        template_key = "psychology_filtering" if mode == "psychology" else "hotlist_filtering"
+
         async with async_session_factory() as db:
-            provider_config = await self._get_text_provider(db)
+            provider_config = await self._get_text_provider(db, provider_id=provider_id)
             settings = get_settings()
             text_provider = self._instantiate_provider(provider_config, settings)
+            prompt_config = await PromptTemplateService.resolve(db, template_key)
+
+        if not prompt_config:
+            raise ValueError("未找到热榜筛选提示词模板，请检查系统配置。")
 
         topic_lines = "\n".join(
             f"{i + 1}. [{t.source}] {t.title}"
             for i, t in enumerate(flat_topics)
         )
 
-        prompt = (
-            f"以下是当前中文互联网热门话题列表：\n\n"
-            f"{topic_lines}\n\n"
-            f"请从中筛选出与健康、医疗、养生、营养、心理健康、运动健身、"
-            f"疾病预防、食品安全、睡眠、母婴健康等健康领域相关的话题。\n\n"
-            f"对于每个健康相关话题，请输出 JSON 数组，每个元素包含：\n"
-            f'- "index": 话题在列表中的序号（从1开始）\n'
-            f'- "relevance": 与健康领域的相关度（0.0-1.0）\n'
-            f'- "angle": 建议的健康科普切入角度（一句话）\n'
-            f'- "category": 健康分类（如：营养饮食、心理健康、运动健身、'
-            f"疾病预防、中医养生、食品安全、睡眠健康、母婴健康等）\n\n"
-            f"只输出 JSON 数组，不要其他文字。如果没有健康相关话题则输出空数组 []。\n"
-            f"示例格式：\n"
-            f'[{{"index": 3, "relevance": 0.9, "angle": "从营养学角度解读该食品的健康影响", '
-            f'"category": "营养饮食"}}]'
-        )
+        target_count = min(max_results * 2, len(flat_topics))
 
-        system_prompt = (
-            "你是一位健康科普领域的编辑，擅长从热门话题中发现健康科普创作机会。"
-            "你的任务是筛选与健康相关的话题，并给出创作建议。只输出JSON，不要输出其他内容。"
-        )
+        try:
+            prompt = prompt_config.user_prompt_template.format(
+                topic_lines=topic_lines,
+                target_count=target_count,
+            )
+        except KeyError as e:
+            logger.warning("Template variable error: %s, using raw template", e)
+            prompt = prompt_config.user_prompt_template
 
         response = await text_provider.generate(TextGenerationRequest(
             prompt=prompt,
-            system_prompt=system_prompt,
-            temperature=0.3,
-            max_tokens=2048,
+            system_prompt=prompt_config.system_prompt,
+            temperature=prompt_config.temperature,
+            max_tokens=prompt_config.max_tokens,
         ))
 
         # Step 3: Parse AI response
@@ -98,23 +97,64 @@ class HotlistService:
         recommendations.sort(key=lambda r: r.relevance_score, reverse=True)
         return recommendations[:max_results], len(flat_topics)
 
+    @staticmethod
+    def _try_fix_truncated_json(text: str) -> list | None:
+        """Attempt to recover items from a truncated JSON array."""
+        import re
+        # Find all complete JSON objects in the text
+        results = []
+        for m in re.finditer(r'\{[^{}]*\}', text):
+            try:
+                obj = json.loads(m.group(0))
+                if "index" in obj:
+                    results.append(obj)
+            except json.JSONDecodeError:
+                continue
+        if results:
+            logger.info("Recovered %d items from truncated JSON", len(results))
+            return results
+        return None
+
+    @staticmethod
+    def _extract_json_array(text: str) -> str | None:
+        """Try to extract a JSON array from text that may contain extra content."""
+        import re
+        # 1. Try the whole text directly
+        stripped = text.strip()
+        if stripped.startswith("["):
+            return stripped
+
+        # 2. Strip markdown code blocks (```json ... ``` or ``` ... ```)
+        md_match = re.search(r"```(?:json)?\s*\n?(.*?)```", stripped, re.DOTALL)
+        if md_match:
+            return md_match.group(1).strip()
+
+        # 3. Find the first [ ... ] block
+        bracket_match = re.search(r"\[.*\]", stripped, re.DOTALL)
+        if bracket_match:
+            return bracket_match.group(0)
+
+        return None
+
     def _parse_ai_response(
         self,
         ai_content: str,
         flat_topics: list[HotTopic],
     ) -> list[HealthTopicRecommendation]:
         """Parse the AI JSON response and map back to original topics."""
-        content = ai_content.strip()
-        # Handle markdown code blocks
-        if content.startswith("```"):
-            lines = content.split("\n")
-            content = "\n".join(lines[1:-1]) if len(lines) > 2 else content
+        content = self._extract_json_array(ai_content)
+        if not content:
+            logger.error("No JSON array found in AI response: %s", ai_content[:300])
+            return []
 
         try:
             items = json.loads(content)
         except json.JSONDecodeError:
-            logger.error(f"Failed to parse AI response as JSON: {content[:200]}")
-            return []
+            # Try to fix truncated JSON: find the last complete object and close the array
+            items = self._try_fix_truncated_json(content)
+            if items is None:
+                logger.error("Failed to parse AI response as JSON: %s", content[:300])
+                return []
 
         if not isinstance(items, list):
             return []
@@ -140,9 +180,15 @@ class HotlistService:
 
         return results
 
-    async def _get_text_provider(self, db: AsyncSession) -> ProviderConfig | None:
+    async def _get_text_provider(self, db: AsyncSession, provider_id: str | None = None) -> ProviderConfig | None:
         """Resolve text provider using the same chain as ArticleService."""
         from .provider_helper import get_provider_from_env, get_first_provider
+
+        # If a specific provider is requested, use it directly
+        if provider_id:
+            config = await db.get(ProviderConfig, provider_id)
+            if config:
+                return config
 
         # Try DB default
         result = await db.execute(

@@ -1,12 +1,25 @@
 <script setup lang="ts">
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { sourcesApi } from '../api/sources'
+import { providersApi } from '../api/providers'
 import { useHotlistStore } from '../stores/hotlist'
 import type { HotTopicItem } from '../types/source'
+import type { ProviderConfig } from '../types/provider'
 
 const router = useRouter()
 const store = useHotlistStore()
+const textProviders = ref<ProviderConfig[]>([])
+
+onMounted(async () => {
+  try {
+    const { data } = await providersApi.list('text')
+    textProviders.value = data
+  } catch {
+    // non-critical
+  }
+})
 
 const SOURCE_OPTIONS = [
   { value: 'weibo', label: '微博热搜' },
@@ -14,6 +27,14 @@ const SOURCE_OPTIONS = [
   { value: 'toutiao', label: '头条热榜' },
   { value: 'tencent', label: '腾讯新闻' },
 ]
+
+function handleModeChange() {
+  store.topics = []
+  store.totalScraped = 0
+  store.activeCategory = 'all'
+}
+
+const modeLabel = () => store.mode === 'psychology' ? '心理健康' : '健康'
 
 async function handleFetch() {
   if (store.selectedSources.length === 0) {
@@ -23,9 +44,9 @@ async function handleFetch() {
   try {
     const data = await store.fetchRecommendations()
     if (data.items.length === 0) {
-      ElMessage.info('未找到健康相关的热门话题')
+      ElMessage.info(`未找到${modeLabel()}相关的热门话题`)
     } else {
-      ElMessage.success(`从 ${data.total_scraped} 条热搜中筛选出 ${data.items.length} 个健康话题`)
+      ElMessage.success(`从 ${data.total_scraped} 条热搜中筛选出 ${data.items.length} 个${modeLabel()}话题`)
     }
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || '获取推荐失败')
@@ -63,9 +84,13 @@ function formatRelevance(score: number) {
 
 <template>
   <div style="max-width: 1200px; margin: 0 auto;">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-      <h2 style="margin: 0;">热门健康话题推荐</h2>
-      <div style="display: flex; gap: 12px; align-items: center;">
+    <el-tabs v-model="store.mode" @tab-change="handleModeChange" style="margin-bottom: 8px;">
+      <el-tab-pane label="健康科普" name="health" />
+      <el-tab-pane label="心理健康" name="psychology" />
+    </el-tabs>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 12px;">
+      <h2 style="margin: 0; white-space: nowrap;">{{ store.mode === 'psychology' ? '心理健康话题推荐' : '热门健康话题推荐' }}</h2>
+      <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
         <el-select
           v-model="store.selectedSources"
           multiple
@@ -79,6 +104,19 @@ function formatRelevance(score: number) {
             :key="opt.value"
             :label="opt.label"
             :value="opt.value"
+          />
+        </el-select>
+        <el-select
+          v-model="store.selectedProviderId"
+          placeholder="AI模型（默认）"
+          clearable
+          style="width: 200px;"
+        >
+          <el-option
+            v-for="p in textProviders"
+            :key="p.id"
+            :label="`${p.name} (${p.model_id || p.provider_key})`"
+            :value="p.id"
           />
         </el-select>
         <el-button type="primary" :loading="store.loading" @click="handleFetch">
@@ -95,7 +133,7 @@ function formatRelevance(score: number) {
       style="margin-bottom: 16px;"
     >
       <template #title>
-        点击"获取推荐"按钮，系统将从微博、百度、头条热榜中抓取话题，并使用 AI 筛选出健康相关话题。
+        点击"获取推荐"按钮，系统将从热榜中抓取话题，并使用 AI 筛选出{{ store.mode === 'psychology' ? '心理健康' : '健康' }}相关话题。
       </template>
     </el-alert>
 

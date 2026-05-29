@@ -1,5 +1,6 @@
 """Application configuration loaded from config.yaml and environment variables."""
 
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -158,6 +159,7 @@ class Settings(BaseSettings):
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "populate_by_name": True}
 
 
+@lru_cache
 def get_settings() -> Settings:
-    """Get cached settings instance."""
+    """Get the cached settings instance (parsed once per process)."""
     return Settings()

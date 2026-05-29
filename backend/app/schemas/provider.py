@@ -32,6 +32,7 @@ class ProviderConfigResponse(BaseModel):
     name: str
     provider_type: str
     provider_key: str
+    api_key_masked: str | None = None
     api_base_url: str | None
     model_id: str | None
     config: dict[str, Any] | None = None
@@ -39,9 +40,21 @@ class ProviderConfigResponse(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
-    # Never expose api_key in responses
 
     model_config = {"from_attributes": True}
+
+    @classmethod
+    def model_validate(cls, obj, **kwargs):
+        """Override to generate masked api_key from the ORM object."""
+        instance = super().model_validate(obj, **kwargs)
+        # Generate mask from the real api_key
+        raw_key = getattr(obj, "api_key", None)
+        if raw_key:
+            if len(raw_key) <= 8:
+                instance.api_key_masked = "****" + raw_key[-2:]
+            else:
+                instance.api_key_masked = raw_key[:3] + "****" + raw_key[-4:]
+        return instance
 
 
 class ProviderTypeInfo(BaseModel):

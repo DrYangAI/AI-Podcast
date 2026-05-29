@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import String, Text, Integer, Float, DateTime, ForeignKey, UniqueConstraint, func
+from sqlalchemy import String, Text, Integer, Float, DateTime, ForeignKey, UniqueConstraint, func  # noqa: E501
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..database import Base
@@ -21,6 +21,7 @@ class Segment(Base):
     duration_hint: Mapped[float | None] = mapped_column(Float, nullable=True)
     script_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     audio_file: Mapped[str | None] = mapped_column(Text, nullable=True)
+    chapter_title: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 

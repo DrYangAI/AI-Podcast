@@ -178,9 +178,13 @@ async def test_provider(provider_id: str, db: AsyncSession = Depends(get_db)):
             config=config,
         )
         success = await provider.validate_connection()
+        if success:
+            message = "Connection successful"
+        else:
+            message = getattr(provider, "_last_error", None) or "Connection failed"
         return ProviderTestResult(
             success=success,
-            message="Connection successful" if success else "Connection failed",
+            message=message,
         )
     except ValueError as e:
         return ProviderTestResult(success=False, message=str(e))

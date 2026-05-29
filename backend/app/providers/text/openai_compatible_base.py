@@ -63,5 +63,7 @@ class OpenAICompatibleTextProvider(TextProvider):
                 max_tokens=5,
             )
             return True
-        except Exception:
+        except Exception as e:
+            # Store error message for the test endpoint to use
+            self._last_error = str(e)
             return False

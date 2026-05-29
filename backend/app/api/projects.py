@@ -24,6 +24,10 @@ from ..schemas.publish import (
     PublishAssetResponse, PublishAssetUpdate,
     CoverRegenerateRequest, CoverPromptResponse, CoverPromptUpdate,
 )
+from ..schemas.prompt_template import (
+    ProjectPromptOverride,
+    ResolvedPromptConfig as ResolvedPromptConfigSchema,
+)
 
 router = APIRouter()
 
@@ -60,6 +64,14 @@ async def list_projects(
 @router.post("", response_model=ProjectResponse, status_code=201)
 async def create_project(data: ProjectCreate, db: AsyncSession = Depends(get_db)):
     """Create a new project and initialize pipeline steps."""
+    # Load global portrait defaults for new projects
+    from ..models.global_setting import GlobalSetting
+    gresult = await db.execute(
+        select(GlobalSetting).where(GlobalSetting.category == "portrait")
+    )
+    gsetting = gresult.scalar_one_or_none()
+    portrait_defaults = json.loads(gsetting.settings_json) if gsetting else {}
+
     project = Project(
         title=data.title,
         topic=data.topic,
@@ -67,9 +79,20 @@ async def create_project(data: ProjectCreate, db: AsyncSession = Depends(get_db)
         source_url=data.source_url,
         aspect_ratio=data.aspect_ratio,
         video_template=data.video_template,
-        portrait_composite_enabled=data.portrait_composite_enabled,
-        portrait_bg_color=data.portrait_bg_color,
+        image_prompt_language=data.image_prompt_language,
+        portrait_composite_enabled=portrait_defaults.get("portrait_composite_enabled", data.portrait_composite_enabled),
+        portrait_bg_color=portrait_defaults.get("portrait_bg_color", data.portrait_bg_color),
         portrait_title_text=data.portrait_title_text,
+        portrait_title_font_size=portrait_defaults.get("portrait_title_font_size", 36),
+        portrait_title_y=portrait_defaults.get("portrait_title_y", 82),
+        portrait_video_y=portrait_defaults.get("portrait_video_y", 480),
+        portrait_subtitle_font_size=portrait_defaults.get("portrait_subtitle_font_size", 38),
+        portrait_subtitle_margin_v=portrait_defaults.get("portrait_subtitle_margin_v", 550),
+        intro_text=data.intro_text,
+        outro_text=data.outro_text,
+        reference_content=data.reference_content,
+        use_reference_content=data.use_reference_content if data.reference_content else False,
+        user_notes=data.user_notes,
     )
     db.add(project)
     await db.flush()
@@ -258,6 +281,70 @@ async def list_segments(project_id: str, db: AsyncSession = Depends(get_db)):
     return [SegmentResponse.model_validate(s) for s in result.scalars().all()]
 
 
+@router.post("/{project_id}/segments/generate-chapter-titles")
+async def generate_chapter_titles(project_id: str, db: AsyncSession = Depends(get_db)):
+    """Use AI to generate chapter titles for all segments."""
+    seg_result = await db.execute(
+        select(Segment)
+        .where(Segment.project_id == project_id)
+        .order_by(Segment.segment_order)
+    )
+    segments = list(seg_result.scalars().all())
+    if not segments:
+        raise HTTPException(status_code=404, detail="No segments found")
+
+    # Get default text provider
+    from ..models import ProviderConfig
+    from ..providers.registry import ProviderRegistry, ProviderType
+    provider_result = await db.execute(
+        select(ProviderConfig)
+        .where(ProviderConfig.provider_type == "text", ProviderConfig.is_default == True)
+    )
+    text_config = provider_result.scalar_one_or_none()
+    if not text_config:
+        raise HTTPException(status_code=400, detail="No text provider configured")
+
+    extra_config = json.loads(text_config.config_json) if text_config.config_json else None
+    text_provider = ProviderRegistry.instantiate(
+        provider_type=ProviderType.TEXT,
+        key=text_config.provider_key,
+        api_key=text_config.api_key or "",
+        api_base_url=text_config.api_base_url or "",
+        model_id=text_config.model_id or "",
+        config=extra_config,
+    )
+
+    # Build prompt
+    numbered = "\n".join(f"[段落{i+1}]: {seg.content[:200]}" for i, seg in enumerate(segments))
+    from ..providers.text.base import TextGenerationRequest
+    response = await text_provider.generate(TextGenerationRequest(
+        prompt=(
+            f"请为以下{len(segments)}个段落各生成一个简短的章节标题（8字以内），用于视频章节导航。\n"
+            f"要求：简洁有力、吸引点击、概括段落核心内容。\n"
+            f"严格按格式输出，每行一个：\n"
+            f"1. 标题\n2. 标题\n...\n\n{numbered}"
+        ),
+        system_prompt="你是一个专业的视频章节标题撰写者。只输出编号和标题，不要任何其他内容。",
+        temperature=0.7,
+        max_tokens=1024,
+    ))
+
+    # Parse titles
+    import re
+    lines = [l.strip() for l in response.content.strip().split("\n") if l.strip()]
+    titles = []
+    for line in lines:
+        m = re.match(r"^\d+[\.\、\)\)]\s*(.+)", line)
+        titles.append(m.group(1).strip() if m else line.strip())
+
+    # Update segments
+    for i, seg in enumerate(segments):
+        seg.chapter_title = titles[i] if i < len(titles) else f"第{i+1}章"
+
+    await db.flush()
+    return [SegmentResponse.model_validate(s) for s in segments]
+
+
 @router.put("/{project_id}/segments/{segment_id}", response_model=SegmentResponse)
 async def update_segment(project_id: str, segment_id: str, data: SegmentUpdate,
                           db: AsyncSession = Depends(get_db)):
@@ -434,6 +521,42 @@ async def update_script(project_id: str, data: ScriptUpdate, db: AsyncSession = 
     script.is_manual = True
     script.version += 1
 
+    # Sync per-segment script_text from the updated full script
+    script_parts = []
+    if data.content:
+        seg_result = await db.execute(
+            select(Segment)
+            .where(Segment.project_id == project_id)
+            .order_by(Segment.segment_order)
+        )
+        segments = list(seg_result.scalars().all())
+        if segments:
+            # Split script by double newline to match segments
+            script_parts = [p.strip() for p in data.content.split("\n\n") if p.strip()]
+            for i, seg in enumerate(segments):
+                if i < len(script_parts):
+                    seg.script_text = script_parts[i]
+                # If fewer script parts than segments, leave remaining unchanged
+
+        # Also sync chunks.json so audio chunk UI and regeneration use new text
+        if script_parts:
+            from ..services.audio_service import clean_script_for_tts
+            settings = get_settings()
+            chunks_json_path = Path(settings.storage.base_dir) / "audio" / project_id / "chunks" / "chunks.json"
+            if chunks_json_path.exists():
+                import json as _json
+                meta = _json.loads(chunks_json_path.read_text())
+                seg_idx = 0
+                for chunk in meta["chunks"]:
+                    if chunk.get("type") in ("intro", "outro"):
+                        continue
+                    if seg_idx < len(script_parts):
+                        clean_text = clean_script_for_tts(script_parts[seg_idx])
+                        chunk["text"] = clean_text
+                        chunk["chars"] = len(clean_text)
+                    seg_idx += 1
+                chunks_json_path.write_text(_json.dumps(meta, ensure_ascii=False, indent=2))
+
     await db.flush()
     return ScriptResponse.model_validate(script)
 
@@ -525,6 +648,122 @@ async def list_videos(project_id: str, db: AsyncSession = Depends(get_db)):
         select(VideoOutput).where(VideoOutput.project_id == project_id)
     )
     return [VideoOutputResponse.model_validate(v) for v in result.scalars().all()]
+
+
+@router.delete("/{project_id}/videos/{video_id}", status_code=204)
+async def delete_video(project_id: str, video_id: str, db: AsyncSession = Depends(get_db)):
+    """Delete a single video output and its file."""
+    result = await db.execute(
+        select(VideoOutput).where(VideoOutput.id == video_id, VideoOutput.project_id == project_id)
+    )
+    video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Delete file from disk
+    if video.file_path:
+        file_path = Path(video.file_path)
+        if file_path.exists():
+            file_path.unlink()
+
+    await db.delete(video)
+    await db.flush()
+
+
+# --- Project-level prompt config ---
+
+@router.get("/{project_id}/prompt-config", response_model=list[ResolvedPromptConfigSchema])
+async def get_project_prompt_config(project_id: str, db: AsyncSession = Depends(get_db)):
+    """Get resolved prompt configs for all steps of a project."""
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    from ..services.prompt_template_service import PromptTemplateService, DEFAULTS, VARIABLE_DESCRIPTIONS
+    configs = []
+    for step_name in DEFAULTS:
+        config = await PromptTemplateService.resolve(db, step_name, project.metadata_json)
+        if config:
+            variable_descs = {v: VARIABLE_DESCRIPTIONS.get(v, v) for v in config.variables}
+            configs.append(ResolvedPromptConfigSchema(
+                step_name=config.step_name,
+                system_prompt=config.system_prompt,
+                user_prompt_template=config.user_prompt_template,
+                temperature=config.temperature,
+                max_tokens=config.max_tokens,
+                variables=config.variables,
+                variable_descriptions=variable_descs,
+                is_override=config.is_override,
+                description=DEFAULTS[step_name]["description"],
+            ))
+    return configs
+
+
+@router.get("/{project_id}/prompt-config/{step_name}", response_model=ResolvedPromptConfigSchema)
+async def get_project_prompt_config_step(project_id: str, step_name: str,
+                                           db: AsyncSession = Depends(get_db)):
+    """Get resolved prompt config for a single step."""
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    from ..services.prompt_template_service import PromptTemplateService, DEFAULTS, VARIABLE_DESCRIPTIONS
+    config = await PromptTemplateService.resolve(db, step_name, project.metadata_json)
+    if not config:
+        raise HTTPException(status_code=404, detail=f"No template for step: {step_name}")
+
+    variable_descs = {v: VARIABLE_DESCRIPTIONS.get(v, v) for v in config.variables}
+    return ResolvedPromptConfigSchema(
+        step_name=config.step_name,
+        system_prompt=config.system_prompt,
+        user_prompt_template=config.user_prompt_template,
+        temperature=config.temperature,
+        max_tokens=config.max_tokens,
+        variables=config.variables,
+        variable_descriptions=variable_descs,
+        is_override=config.is_override,
+        description=DEFAULTS.get(step_name, {}).get("description", ""),
+    )
+
+
+@router.put("/{project_id}/prompt-config/{step_name}")
+async def update_project_prompt_config(project_id: str, step_name: str,
+                                         data: ProjectPromptOverride,
+                                         db: AsyncSession = Depends(get_db)):
+    """Set project-level prompt override for a step."""
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    metadata = json.loads(project.metadata_json) if project.metadata_json else {}
+    if "prompt_overrides" not in metadata:
+        metadata["prompt_overrides"] = {}
+
+    override = data.model_dump(exclude_none=True)
+    if override:
+        metadata["prompt_overrides"][step_name] = override
+
+    project.metadata_json = json.dumps(metadata, ensure_ascii=False)
+    await db.flush()
+    return {"ok": True}
+
+
+@router.delete("/{project_id}/prompt-config/{step_name}")
+async def delete_project_prompt_config(project_id: str, step_name: str,
+                                         db: AsyncSession = Depends(get_db)):
+    """Remove project-level prompt override for a step (revert to system default)."""
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    metadata = json.loads(project.metadata_json) if project.metadata_json else {}
+    overrides = metadata.get("prompt_overrides", {})
+    if step_name in overrides:
+        del overrides[step_name]
+        metadata["prompt_overrides"] = overrides
+        project.metadata_json = json.dumps(metadata, ensure_ascii=False)
+        await db.flush()
+    return {"ok": True}
 
 
 # --- Publish assets endpoints ---

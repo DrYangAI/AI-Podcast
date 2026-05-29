@@ -8,7 +8,9 @@ export const useHotlistStore = defineStore('hotlist', () => {
   const totalScraped = ref(0)
   const loading = ref(false)
   const selectedSources = ref<string[]>(['weibo', 'baidu', 'toutiao', 'tencent'])
+  const selectedProviderId = ref<string>('')
   const activeCategory = ref('all')
+  const mode = ref<'health' | 'psychology'>('health')
 
   const categories = computed(() => {
     const cats = new Set(topics.value.map(t => t.category).filter(Boolean))
@@ -23,7 +25,12 @@ export const useHotlistStore = defineStore('hotlist', () => {
   async function fetchRecommendations() {
     loading.value = true
     try {
-      const { data } = await sourcesApi.getHotRecommendations(selectedSources.value)
+      const { data } = await sourcesApi.getHotRecommendations(
+        selectedSources.value,
+        undefined,
+        selectedProviderId.value || undefined,
+        mode.value,
+      )
       topics.value = data.items
       totalScraped.value = data.total_scraped
       return data
@@ -37,7 +44,9 @@ export const useHotlistStore = defineStore('hotlist', () => {
     totalScraped,
     loading,
     selectedSources,
+    selectedProviderId,
     activeCategory,
+    mode,
     categories,
     filteredTopics,
     fetchRecommendations,

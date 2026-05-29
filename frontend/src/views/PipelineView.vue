@@ -128,6 +128,23 @@ async function retryStep(stepName: string) {
   }
 }
 
+async function runFromStep(stepName: string) {
+  // Find the next step after the current one
+  const steps = store.pipelineSteps
+  const currentIdx = steps.findIndex(s => s.step_name === stepName)
+  if (currentIdx < 0 || currentIdx >= steps.length - 1) return
+
+  const nextStep = steps[currentIdx + 1]!
+  try {
+    const overrides = buildOverrides()
+    await pipelineApi.runPipeline(projectId.value, nextStep.step_name, overrides)
+    ElMessage.success(`从"${stepLabels[nextStep.step_name]}"开始自动运行`)
+    store.startPolling(projectId.value)
+  } catch {
+    ElMessage.error('启动失败')
+  }
+}
+
 function goToStep(stepName: string) {
   const routeName = stepRoutes[stepName]
   if (routeName) {
@@ -228,6 +245,10 @@ async function togglePortraitComposite(enabled: boolean) {
               <el-button v-if="step.status === 'completed' && step.step_name !== 'topic_input'"
                 text type="primary" size="small" @click="runStep(step.step_name)">
                 <el-icon><RefreshRight /></el-icon> 重新运行
+              </el-button>
+              <el-button v-if="step.status === 'completed' && step.step_name !== 'topic_input' && step.step_name !== 'publish_copy'"
+                text type="success" size="small" @click="runFromStep(step.step_name)">
+                <el-icon><VideoPlay /></el-icon> 从此继续
               </el-button>
               <el-button v-if="step.status === 'pending' && step.step_name !== 'topic_input'"
                 text type="primary" size="small" @click="runStep(step.step_name)">

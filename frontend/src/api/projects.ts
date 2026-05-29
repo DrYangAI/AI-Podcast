@@ -12,7 +12,7 @@ export const projectsApi = {
     return apiClient.get<ProjectDetail>(`/projects/${id}`)
   },
 
-  create(data: { title: string; topic: string; aspect_ratio?: string; video_template?: string; image_prompt_language?: string }) {
+  create(data: { title: string; topic: string; aspect_ratio?: string; video_template?: string; image_prompt_language?: string; reference_content?: string; source_type?: string; source_url?: string }) {
     return apiClient.post<Project>('/projects', data)
   },
 
@@ -40,8 +40,13 @@ export const projectsApi = {
   getSegments(id: string) {
     return apiClient.get<Segment[]>(`/projects/${id}/segments`)
   },
-  updateSegment(projectId: string, segmentId: string, data: { content?: string; image_prompt?: string }) {
+  updateSegment(projectId: string, segmentId: string, data: { content?: string; image_prompt?: string; chapter_title?: string }) {
     return apiClient.put<Segment>(`/projects/${projectId}/segments/${segmentId}`, data)
+  },
+  generateChapterTitles(projectId: string) {
+    return apiClient.post<Segment[]>(`/projects/${projectId}/segments/generate-chapter-titles`, null, {
+      timeout: 60000,
+    })
   },
 
   // Images
@@ -90,5 +95,8 @@ export const projectsApi = {
   // Videos
   getVideos(id: string) {
     return apiClient.get<VideoOutput[]>(`/projects/${id}/videos`)
+  },
+  deleteVideo(projectId: string, videoId: string) {
+    return apiClient.delete(`/projects/${projectId}/videos/${videoId}`)
   },
 }

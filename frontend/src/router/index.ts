@@ -58,6 +58,16 @@ const router = createRouter({
           name: 'project-publish',
           component: () => import('../views/PublishAssetsView.vue'),
         },
+        {
+          path: 'prompts',
+          name: 'project-prompts',
+          component: () => import('../views/PromptConfigView.vue'),
+        },
+        {
+          path: 'settings',
+          name: 'project-settings',
+          component: () => import('../views/ProjectSettingsView.vue'),
+        },
       ],
     },
     {
@@ -74,6 +84,11 @@ const router = createRouter({
       path: '/settings/providers',
       name: 'provider-settings',
       component: () => import('../views/ProviderSettingsView.vue'),
+    },
+    {
+      path: '/settings/prompts',
+      name: 'prompt-templates',
+      component: () => import('../views/PromptTemplatesView.vue'),
     },
   ],
 })

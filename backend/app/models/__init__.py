@@ -12,6 +12,8 @@ from .provider_config import ProviderConfig
 from .content_source import ContentSource, FetchedTopic
 from .voice_clone import VoiceClone
 from .publish_asset import PublishAsset
+from .prompt_template import PromptTemplate, PromptTemplateHistory
+from .global_setting import GlobalSetting
 
 __all__ = [
     "Project",
@@ -27,4 +29,7 @@ __all__ = [
     "FetchedTopic",
     "VoiceClone",
     "PublishAsset",
+    "PromptTemplate",
+    "PromptTemplateHistory",
+    "GlobalSetting",
 ]

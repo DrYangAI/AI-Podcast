@@ -22,6 +22,28 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8001
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 ```
 
+### Database migrations (Alembic)
+The schema is managed by Alembic. The app runs `alembic upgrade head` automatically
+on startup (`init_db`), so you normally don't run anything by hand. To change the schema:
+```bash
+cd /Users/mac/AI-Podcast/backend
+
+# 1. Edit the SQLAlchemy models in app/models/
+# 2. Generate a migration from the model changes
+alembic revision --autogenerate -m "describe the change"
+# 3. Review the generated file in alembic/versions/ before committing
+# 4. Apply it (also happens automatically on next app start)
+alembic upgrade head
+
+# Useful checks
+alembic check     # fail if models drift from the DB (no migration generated)
+alembic current   # show the DB's current revision
+alembic history   # list migrations
+```
+Do NOT hand-write `ALTER TABLE` in `database.py` anymore — that approach was retired.
+An existing pre-Alembic database is detected and stamped to head on first start
+(its tables are kept, not recreated).
+
 ### Frontend
 ```bash
 cd /Users/mac/AI-Podcast/frontend

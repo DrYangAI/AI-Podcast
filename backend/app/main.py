@@ -1,9 +1,16 @@
 """FastAPI application entry point."""
 
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+
+# Configure logging so all app loggers output to console
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -22,6 +29,11 @@ async def lifespan(app: FastAPI):
         Path(dir_path).mkdir(parents=True, exist_ok=True)
     # Initialize database tables
     await init_db()
+    # Seed default prompt templates
+    from .services.prompt_template_service import PromptTemplateService
+    from .database import async_session_factory
+    async with async_session_factory() as db:
+        await PromptTemplateService.seed_defaults(db)
     # Discover AI providers
     from .providers import discover_providers
     discover_providers()

@@ -461,7 +461,7 @@ function getSegmentImageUrl(img: ImageAsset): string {
                 </el-text>
               </div>
               <el-input
-                v-model="editData[activeTab].title"
+                v-model="currentEdit.title"
                 placeholder="输入标题"
                 :class="{ 'is-over': titleOver }"
               />
@@ -482,7 +482,7 @@ function getSegmentImageUrl(img: ImageAsset): string {
                 </el-text>
               </div>
               <el-input
-                v-model="editData[activeTab].description"
+                v-model="currentEdit.description"
                 type="textarea"
                 :rows="6"
                 placeholder="输入摘要"
@@ -500,7 +500,7 @@ function getSegmentImageUrl(img: ImageAsset): string {
             <div style="margin-bottom: 20px;">
               <el-text tag="b" style="display: block; margin-bottom: 6px;">标签</el-text>
               <el-input
-                v-model="editData[activeTab].tags"
+                v-model="currentEdit.tags"
                 placeholder="#标签1 #标签2 #标签3"
               />
               <el-button

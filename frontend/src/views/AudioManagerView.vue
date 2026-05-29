@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { projectsApi } from '../api/projects'
@@ -33,8 +33,6 @@ const chunks = ref<AudioChunk[]>([])
 const chunksLoaded = ref(false)
 const chunkRegenerating = ref<number | null>(null)  // index of chunk being regenerated
 const concatenating = ref(false)
-const playingChunkIndex = ref<number | null>(null)
-const chunkAudioRef = ref<HTMLAudioElement | null>(null)
 
 // Voice selection state
 const voiceMode = ref<'preset' | 'cloned'>('preset')
@@ -225,10 +223,6 @@ async function handleCreateClone() {
     ElMessage.warning('请输入火山引擎音色 ID (speaker_id)')
     return
   }
-  if (!cloneFile.value) {
-    ElMessage.warning('请上传参考音频文件')
-    return
-  }
 
   cloneUploading.value = true
   try {
@@ -236,7 +230,9 @@ async function handleCreateClone() {
     formData.append('name', cloneForm.value.name.trim())
     formData.append('speaker_id', cloneForm.value.speaker_id.trim())
     formData.append('provider_key', 'doubao_tts')
-    formData.append('audio_file', cloneFile.value)
+    if (cloneFile.value) {
+      formData.append('audio_file', cloneFile.value)
+    }
     if (cloneForm.value.reference_text.trim()) {
       formData.append('reference_text', cloneForm.value.reference_text.trim())
     }
@@ -244,7 +240,10 @@ async function handleCreateClone() {
 
     const { data } = await voicesApi.clone(formData)
     const statusInfo = getTrainingStatusTag(data.training_status)
-    ElMessage.success(`声音 "${data.name}" 训练已提交（${statusInfo.text}）`)
+    const msg = cloneFile.value
+      ? `声音 "${data.name}" 训练已提交（${statusInfo.text}）`
+      : `声音 "${data.name}" 已添加（${statusInfo.text}）`
+    ElMessage.success(msg)
     cloneDialogVisible.value = false
 
     // Reload voices and select the new one
@@ -351,29 +350,10 @@ function chunkSpeedDeviation(chunk: AudioChunk): number {
   if (chunks.value.length < 2) return 0
   const speeds = chunks.value.map(c => c.speed).sort((a, b) => a - b)
   const median = speeds[Math.floor(speeds.length / 2)]
-  if (median === 0) return 0
+  if (!median) return 0
   return Math.abs(chunk.speed - median) / median
 }
 
-function playChunk(index: number) {
-  if (playingChunkIndex.value === index && chunkAudioRef.value) {
-    chunkAudioRef.value.pause()
-    playingChunkIndex.value = null
-    return
-  }
-  playingChunkIndex.value = index
-  const chunk = chunks.value[index]
-  if (!chunk) return
-  // Create or reuse audio element
-  if (!chunkAudioRef.value) {
-    chunkAudioRef.value = new Audio()
-    chunkAudioRef.value.addEventListener('ended', () => {
-      playingChunkIndex.value = null
-    })
-  }
-  chunkAudioRef.value.src = getChunkAudioUrl(chunk)
-  chunkAudioRef.value.play()
-}
 
 async function handleRegenerateChunk(index: number) {
   chunkRegenerating.value = index
@@ -464,6 +444,7 @@ async function handleConcatenate() {
               v-for="v in clonedVoices"
               :key="v.id"
               :value="v.id"
+              :label="v.name + (v.is_default ? ' ⭐默认' : '')"
             >
               <span>{{ v.name }}{{ v.is_default ? ' ⭐默认' : '' }}</span>
               <el-tag :type="getTrainingStatusTag(v.training_status).type" size="small" style="margin-left: 8px;">
@@ -563,41 +544,41 @@ async function handleConcatenate() {
       <div
         v-for="chunk in chunks"
         :key="chunk.index"
-        style="display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--el-border-color-lighter);"
+        style="padding: 8px 0; border-bottom: 1px solid var(--el-border-color-lighter);"
         :style="chunkSpeedDeviation(chunk) > 0.3 ? { background: 'var(--el-color-warning-light-9)' } : {}"
       >
-        <el-tag size="small" :type="chunkSpeedDeviation(chunk) > 0.3 ? 'warning' : 'info'" style="min-width: 28px; text-align: center;">
-          {{ chunk.index + 1 }}
-        </el-tag>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <el-tag size="small" :type="chunkSpeedDeviation(chunk) > 0.3 ? 'warning' : 'info'" style="min-width: 28px; text-align: center;">
+            {{ chunk.index + 1 }}
+          </el-tag>
 
-        <div style="flex: 1; min-width: 0;">
-          <div style="font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-            {{ chunk.text.substring(0, 50) }}{{ chunk.text.length > 50 ? '...' : '' }}
+          <div style="flex: 1; min-width: 0;">
+            <div style="font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+              {{ chunk.text.substring(0, 50) }}{{ chunk.text.length > 50 ? '...' : '' }}
+            </div>
+            <div style="font-size: 11px; color: var(--el-text-color-secondary); margin-top: 2px;">
+              {{ chunk.chars }}字 | {{ formatDuration(chunk.duration) }} | {{ chunk.speed.toFixed(1) }}字/秒
+              <el-tag v-if="chunkSpeedDeviation(chunk) > 0.3" size="small" type="warning" style="margin-left: 4px;">
+                语速异常
+              </el-tag>
+            </div>
           </div>
-          <div style="font-size: 11px; color: var(--el-text-color-secondary); margin-top: 2px;">
-            {{ chunk.chars }}字 | {{ formatDuration(chunk.duration) }} | {{ chunk.speed.toFixed(1) }}字/秒
-            <el-tag v-if="chunkSpeedDeviation(chunk) > 0.3" size="small" type="warning" style="margin-left: 4px;">
-              语速异常
-            </el-tag>
-          </div>
+
+          <el-button
+            size="small"
+            @click="handleRegenerateChunk(chunk.index)"
+            :loading="chunkRegenerating === chunk.index"
+            :disabled="chunkRegenerating !== null && chunkRegenerating !== chunk.index"
+          >
+            重新生成
+          </el-button>
         </div>
-
-        <el-button
-          :icon="playingChunkIndex === chunk.index ? 'VideoPause' : 'VideoPlay'"
-          size="small"
-          circle
-          @click="playChunk(chunk.index)"
-          :type="playingChunkIndex === chunk.index ? 'warning' : 'default'"
-        />
-
-        <el-button
-          size="small"
-          @click="handleRegenerateChunk(chunk.index)"
-          :loading="chunkRegenerating === chunk.index"
-          :disabled="chunkRegenerating !== null && chunkRegenerating !== chunk.index"
-        >
-          重新生成
-        </el-button>
+        <audio
+          controls
+          :src="getChunkAudioUrl(chunk)"
+          style="width: 100%; height: 36px; margin-top: 6px;"
+          preload="none"
+        ></audio>
       </div>
     </el-card>
 
@@ -613,7 +594,7 @@ async function handleConcatenate() {
             需要在火山引擎控制台购买声音复刻服务后获取 speaker_id
           </el-text>
         </el-form-item>
-        <el-form-item label="参考音频" required>
+        <el-form-item label="参考音频">
           <el-upload
             :auto-upload="false"
             :limit="1"
@@ -624,7 +605,9 @@ async function handleConcatenate() {
               <el-icon><Upload /></el-icon> 选择音频文件
             </el-button>
             <template #tip>
-              <div class="el-upload__tip">支持 mp3/wav/ogg/flac/m4a 格式，建议 10~15 秒清晰单人语音</div>
+              <div class="el-upload__tip">
+                可选。上传音频将调用火山引擎训练接口；不上传则直接使用已训练好的 speaker_id
+              </div>
             </template>
           </el-upload>
         </el-form-item>
@@ -644,7 +627,7 @@ async function handleConcatenate() {
       <template #footer>
         <el-button @click="cloneDialogVisible = false">取消</el-button>
         <el-button type="primary" @click="handleCreateClone" :loading="cloneUploading">
-          提交训练
+          {{ cloneFile ? '提交训练' : '添加声音' }}
         </el-button>
       </template>
     </el-dialog>

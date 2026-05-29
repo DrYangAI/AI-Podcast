@@ -27,6 +27,30 @@ export interface Project {
   portrait_video_y: number
   portrait_subtitle_font_size: number
   portrait_subtitle_margin_v: number
+  portrait_title_color: string
+  portrait_title_outline_color: string
+  portrait_title_outline_width: number
+  portrait_title_shadow_enabled: boolean
+  portrait_title_shadow_color: string
+  portrait_title_shadow_opacity: number
+  portrait_title_shadow_x: number
+  portrait_title_shadow_y: number
+  portrait_sub_title_text: string | null
+  portrait_sub_title_font_size: number
+  portrait_sub_title_color: string
+  portrait_sub_title_y: number
+  portrait_title_bg_enabled: boolean
+  portrait_title_bg_color: string
+  portrait_title_bg_opacity: number
+  portrait_title_bg_padding: number
+  portrait_title_bg_shape: string
+  portrait_title_bg_radius: number
+  portrait_title_bg_skew: number
+  intro_text: string | null
+  outro_text: string | null
+  reference_content: string | null
+  use_reference_content: boolean
+  user_notes: string | null
   tts_voice_id: string | null
   tts_voice_clone_id: string | null
   status: string
@@ -61,6 +85,7 @@ export interface Segment {
   content: string
   image_prompt: string | null
   duration_hint: number | null
+  chapter_title: string | null
 }
 
 export interface ImageAsset {

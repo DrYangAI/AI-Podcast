@@ -184,6 +184,36 @@ class VideoService:
             if not image_paths:
                 raise ValueError("No images available for video composition")
 
+            # --- Inject intro/outro ---
+            intro_text_val = (getattr(project, 'intro_text', None) or '').strip()
+            outro_text_val = (getattr(project, 'outro_text', None) or '').strip()
+
+            if intro_text_val and image_paths:
+                image_paths.insert(0, image_paths[0])
+                segment_texts.insert(0, clean_script_for_tts(intro_text_val))
+
+            if outro_text_val and image_paths:
+                image_paths.append(image_paths[-1])
+                segment_texts.append(clean_script_for_tts(outro_text_val))
+
+            # Adjust durations for intro/outro
+            if has_segment_durations and (intro_text_val or outro_text_val):
+                audio_seg_base = Path(settings.storage.base_dir) / "audio" / project_id / "segments"
+                if intro_text_val:
+                    intro_audio_file = audio_seg_base / "seg_intro" / "speech.mp3"
+                    if intro_audio_file.exists():
+                        from ..providers.tts.base import TTSProvider
+                        actual_durations.insert(0, await TTSProvider._probe_duration(intro_audio_file))
+                    else:
+                        has_segment_durations = False
+                if outro_text_val and has_segment_durations:
+                    outro_audio_file = audio_seg_base / "seg_outro" / "speech.mp3"
+                    if outro_audio_file.exists():
+                        from ..providers.tts.base import TTSProvider
+                        actual_durations.append(await TTSProvider._probe_duration(outro_audio_file))
+                    else:
+                        has_segment_durations = False
+
             # Build output path
             output_dir = Path(settings.storage.output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)

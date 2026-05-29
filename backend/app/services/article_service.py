@@ -32,13 +32,28 @@ class ArticleService:
             provider_config = await self._get_provider(db, "text", provider_overrides)
             text_provider = self._instantiate_provider(provider_config, settings)
 
+            # Resolve prompt config
+            from ..services.prompt_template_service import PromptTemplateService
+            prompt_config = await PromptTemplateService.resolve(db, "article_generation", project.metadata_json)
+
             # Generate article
+            ref = project.reference_content if project.use_reference_content else None
+            logger.info(
+                "Article generation for project %s: use_reference_content=%s, reference_content length=%s",
+                project_id, project.use_reference_content,
+                len(ref) if ref else 0,
+            )
+            if ref:
+                logger.info("Reference content preview (first 200 chars): %s", ref[:200])
             response = await text_provider.generate_article(
                 topic=project.topic,
                 style=settings.content.article_default_style,
                 language=settings.content.default_language,
                 min_words=settings.content.article_min_words,
                 max_words=settings.content.article_max_words,
+                prompt_config=prompt_config,
+                reference_content=project.reference_content if project.use_reference_content else None,
+                user_notes=project.user_notes,
             )
 
             # Save or update article

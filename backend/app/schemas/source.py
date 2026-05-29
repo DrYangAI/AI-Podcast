@@ -60,9 +60,17 @@ class UrlExtractResponse(BaseModel):
     url: str
 
 
+class PdfExtractResponse(BaseModel):
+    title: str
+    content: str
+    filename: str
+
+
 class HotTopicRequest(BaseModel):
     sources: list[str] | None = None
     max_results: int = Field(default=15, ge=1, le=50)
+    provider_id: str | None = None
+    mode: str = Field(default="health", pattern=r"^(health|psychology)$")
 
 
 class HotTopicItem(BaseModel):

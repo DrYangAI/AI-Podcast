@@ -14,6 +14,7 @@ const generatingSet = ref<Set<string>>(new Set())
 const settingsVisible = ref(false)
 const generatingPrompts = ref(false)
 let imagePollingTimer: ReturnType<typeof setInterval> | null = null
+let imagePollingStartTime = 0
 
 // Per-image prompt editing
 const editingPrompt = ref<{ segmentId: string; prompt: string } | null>(null)
@@ -88,23 +89,36 @@ onUnmounted(() => {
 
 function startImagePolling() {
   if (imagePollingTimer) return
+  imagePollingStartTime = Date.now()
   imagePollingTimer = setInterval(async () => {
+    // Timeout after 3 minutes to avoid infinite polling
+    if (Date.now() - imagePollingStartTime > 180000) {
+      for (const segId of generatingSet.value) {
+        const seg = store.segments.find(s => s.id === segId)
+        const label = seg ? `段落 ${seg.segment_order + 1}` : ''
+        ElMessage.warning(`${label} 图片生成超时，请重试`)
+      }
+      generatingSet.value.clear()
+      stopImagePolling()
+      return
+    }
     await store.loadImages(projectId.value)
     // Check each tracked segment
     const finished: string[] = []
     for (const segId of generatingSet.value) {
       const img = store.images.find(i => i.segment_id === segId)
-      if (!img || img.status === 'completed') {
+      if (img && img.status === 'completed' && img.file_path) {
         finished.push(segId)
         const seg = store.segments.find(s => s.id === segId)
         const label = seg ? `段落 ${seg.segment_order + 1}` : ''
         ElMessage.success(`${label} 图片生成完成`)
-      } else if (img.status === 'failed') {
+      } else if (img && img.status === 'failed') {
         finished.push(segId)
         const seg = store.segments.find(s => s.id === segId)
         const label = seg ? `段落 ${seg.segment_order + 1}` : ''
         ElMessage.error(`${label} 图片生成失败`)
       }
+      // If no img record yet, keep polling (backend hasn't created it yet)
     }
     finished.forEach(id => generatingSet.value.delete(id))
     if (generatingSet.value.size === 0) {
@@ -264,7 +278,7 @@ async function saveSettings() {
         <el-button @click="settingsVisible = true" size="small">
           <el-icon><Setting /></el-icon> 参数设置
         </el-button>
-        <el-button v-if="store.images.length > 0" @click="utilsApi.openFolder(store.images[0].file_path)" size="small">
+        <el-button v-if="store.images.length > 0" @click="utilsApi.openFolder(store.images[0]!.file_path)" size="small">
           <el-icon><FolderOpened /></el-icon> 打开目录
         </el-button>
         <el-button @click="handleGeneratePrompts" :loading="generatingPrompts">

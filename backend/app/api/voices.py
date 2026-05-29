@@ -85,80 +85,81 @@ async def create_voice_clone(
     provider_key: str = Form(default="doubao_tts"),
     reference_text: str = Form(default=None),
     is_default: bool = Form(default=False),
-    audio_file: UploadFile = File(...),
+    audio_file: UploadFile | None = File(default=None),
     db: AsyncSession = Depends(get_db),
 ):
-    """Upload reference audio, call Volcano Engine training API, create cloned voice.
+    """Create a cloned voice entry.
 
-    Flow:
-    1. Save audio locally
-    2. Call POST /api/v3/tts/voice_clone to start training
-    3. Store speaker_id + training status
+    Two modes:
+    - With audio_file: upload reference audio and call Volcano Engine training API
+    - Without audio_file: register an already-trained voice from Volcano Engine (skips training)
     """
-    # Validate file type
-    ext = (audio_file.filename or "").rsplit(".", 1)[-1].lower()
-    if ext not in ("mp3", "wav", "ogg", "flac", "m4a", "aac", "pcm"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"不支持的音频格式: {ext}。支持 mp3/wav/ogg/flac/m4a/aac/pcm"
-        )
+    file_path_str = ""
+    training_status = 4  # Default: assume already active when no audio uploaded
 
-    # Save reference audio file locally
-    settings = get_settings()
-    voice_dir = Path(settings.storage.base_dir) / "voices"
-    voice_dir.mkdir(parents=True, exist_ok=True)
-
-    file_id = uuid.uuid4().hex[:12]
-    filename = f"ref_{file_id}.{ext}"
-    file_path = voice_dir / filename
-
-    content = await audio_file.read()
-    file_path.write_bytes(content)
-
-    # Get credentials
-    app_id, api_key = await _get_doubao_tts_credentials(db)
-
-    # Call Volcano Engine voice_clone training API
-    audio_b64 = base64.b64encode(content).decode()
-    train_payload = {
-        "speaker_id": speaker_id,
-        "audio": {
-            "data": audio_b64,
-            "format": ext if ext != "mp3" else "mp3",
-        },
-        "language": 0,  # 中文
-    }
-    if reference_text:
-        train_payload["audio"]["text"] = reference_text
-
-    train_headers = {
-        "Content-Type": "application/json",
-        "X-Api-App-Key": app_id,
-        "X-Api-Access-Key": api_key,
-        "X-Api-Request-Id": str(uuid.uuid4()),
-    }
-
-    training_status = 0
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(
-                VOICE_CLONE_API,
-                json=train_payload,
-                headers=train_headers,
+    if audio_file and audio_file.filename:
+        # Mode 1: Upload + train
+        ext = (audio_file.filename or "").rsplit(".", 1)[-1].lower()
+        if ext not in ("mp3", "wav", "ogg", "flac", "m4a", "aac", "pcm"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"不支持的音频格式: {ext}。支持 mp3/wav/ogg/flac/m4a/aac/pcm"
             )
-            resp_data = resp.json()
 
-            if resp.status_code == 200:
-                training_status = resp_data.get("status", 2)
-            else:
-                error_code = resp_data.get("code", resp.status_code)
-                error_msg = resp_data.get("message", resp.text)
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"火山引擎声音训练失败 ({error_code}): {error_msg}"
+        settings = get_settings()
+        voice_dir = Path(settings.storage.base_dir) / "voices"
+        voice_dir.mkdir(parents=True, exist_ok=True)
+
+        file_id = uuid.uuid4().hex[:12]
+        filename = f"ref_{file_id}.{ext}"
+        file_path = voice_dir / filename
+
+        content = await audio_file.read()
+        file_path.write_bytes(content)
+        file_path_str = str(file_path)
+
+        # Call Volcano Engine voice_clone training API
+        app_id, api_key = await _get_doubao_tts_credentials(db)
+        audio_b64 = base64.b64encode(content).decode()
+        train_payload = {
+            "speaker_id": speaker_id,
+            "audio": {
+                "data": audio_b64,
+                "format": ext if ext != "mp3" else "mp3",
+            },
+            "language": 0,
+        }
+        if reference_text:
+            train_payload["audio"]["text"] = reference_text
+
+        train_headers = {
+            "Content-Type": "application/json",
+            "X-Api-App-Key": app_id,
+            "X-Api-Access-Key": api_key,
+            "X-Api-Request-Id": str(uuid.uuid4()),
+        }
+
+        training_status = 0
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.post(
+                    VOICE_CLONE_API,
+                    json=train_payload,
+                    headers=train_headers,
                 )
-    except httpx.HTTPError as e:
-        raise HTTPException(status_code=500, detail=f"声音训练请求失败: {e}")
+                resp_data = resp.json()
+
+                if resp.status_code == 200:
+                    training_status = resp_data.get("status", 2)
+                else:
+                    error_code = resp_data.get("code", resp.status_code)
+                    error_msg = resp_data.get("message", resp.text)
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"火山引擎声音训练失败 ({error_code}): {error_msg}"
+                    )
+        except httpx.HTTPError as e:
+            raise HTTPException(status_code=500, detail=f"声音训练请求失败: {e}")
 
     # If setting as default, unset others
     if is_default:
@@ -172,7 +173,7 @@ async def create_voice_clone(
         name=name,
         provider_key=provider_key,
         speaker_id=speaker_id,
-        reference_audio_path=str(file_path),
+        reference_audio_path=file_path_str,
         reference_text=reference_text if reference_text else None,
         training_status=training_status,
         is_default=is_default,

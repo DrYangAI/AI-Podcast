@@ -4,7 +4,7 @@ import json
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,10 +13,12 @@ from ..models import ContentSource, FetchedTopic, Project, PipelineStep
 from ..schemas.source import (
     ContentSourceCreate, ContentSourceUpdate, ContentSourceResponse,
     FetchedTopicResponse, UrlExtractRequest, UrlExtractResponse,
+    PdfExtractResponse,
     HotTopicRequest, HotTopicResponse, HotTopicItem, HotTopicProjectCreate,
 )
 from ..schemas.project import ProjectResponse
 from ..utils.rss_parser import parse_feed
+from ..utils.pdf_extractor import extract_pdf
 from ..utils.url_extractor import extract_article
 
 logger = logging.getLogger(__name__)
@@ -179,6 +181,34 @@ async def extract_url_content(data: UrlExtractRequest):
         raise HTTPException(status_code=502, detail=f"Failed to extract content: {str(e)}")
 
 
+@router.post("/extract-pdf", response_model=PdfExtractResponse)
+async def extract_pdf_content(file: UploadFile = File(...)):
+    """Extract text content from an uploaded PDF file."""
+    # Validate file type
+    filename = file.filename or "upload.pdf"
+    if not filename.lower().endswith(".pdf") and file.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="仅支持 PDF 文件")
+
+    # Read and check size (max 20MB)
+    content = await file.read()
+    max_size = 20 * 1024 * 1024
+    if len(content) > max_size:
+        raise HTTPException(status_code=400, detail="文件过大，最大支持 20MB")
+
+    try:
+        result = extract_pdf(content)
+        return PdfExtractResponse(
+            title=result.title,
+            content=result.content,
+            filename=filename,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to extract PDF content: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"PDF 内容提取失败: {str(e)}")
+
+
 # ---- Hot topic recommendations ----
 
 @router.post("/hotlist/recommend", response_model=HotTopicResponse)
@@ -194,6 +224,8 @@ async def get_hot_topic_recommendations(data: HotTopicRequest | None = None):
         recommendations, total_scraped = await service.get_health_recommendations(
             sources=data.sources,
             max_results=data.max_results,
+            provider_id=data.provider_id,
+            mode=data.mode,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

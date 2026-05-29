@@ -62,12 +62,21 @@ class ScriptService:
 
             style = settings.content.script_default_style
 
+            # Resolve prompt configs
+            from ..services.prompt_template_service import PromptTemplateService
+            project = await db.get(Project, project_id)
+
             if segments:
                 # New path: generate per-segment script
                 segment_contents = [seg.content for seg in segments]
+                seg_prompt_config = await PromptTemplateService.resolve(
+                    db, "segmented_script_generation",
+                    project.metadata_json if project else None,
+                )
                 response = await text_provider.generate_segmented_script(
                     segments=segment_contents,
                     style=style,
+                    prompt_config=seg_prompt_config,
                 )
                 # Parse into per-segment texts
                 segment_scripts = TextProvider.parse_segmented_script(
@@ -89,9 +98,14 @@ class ScriptService:
                 )
             else:
                 # Legacy path: generate from full article
+                script_prompt_config = await PromptTemplateService.resolve(
+                    db, "script_generation",
+                    project.metadata_json if project else None,
+                )
                 response = await text_provider.generate_script(
                     article=article.content,
                     style=style,
+                    prompt_config=script_prompt_config,
                 )
                 full_script = response.content
 

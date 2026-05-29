@@ -1,12 +1,17 @@
 """Database engine and session management."""
 
+import asyncio
+import logging
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy import text
+from sqlalchemy import create_engine, event, inspect
 
 from .config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -20,8 +25,19 @@ engine = create_async_engine(
     echo=settings.database.echo,
     connect_args={
         "check_same_thread": False,  # SQLite-specific
+        "timeout": 30,  # SQLite busy_timeout in seconds
     },
 )
+
+
+# Set WAL mode and busy_timeout on every new connection automatically
+@event.listens_for(engine.sync_engine, "connect")
+def _set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=30000")
+    cursor.close()
+
 
 async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -30,9 +46,6 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Dependency that provides an async database session."""
     async with async_session_factory() as session:
         try:
-            # Enable WAL mode for this connection
-            await session.execute(text("PRAGMA journal_mode=WAL"))
-            await session.execute(text("PRAGMA busy_timeout=5000"))
             yield session
             await session.commit()
         except Exception:
@@ -40,48 +53,53 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             raise
 
 
+def _sync_db_url() -> str:
+    """A synchronous DB URL for Alembic (strips the async driver suffix)."""
+    return settings.database.url.replace("+aiosqlite", "").replace("+asyncpg", "+psycopg2")
+
+
+def _alembic_config():
+    """Build an Alembic Config pointing at this project's migration scripts."""
+    from alembic.config import Config
+
+    backend_dir = Path(__file__).resolve().parent.parent  # .../backend
+    cfg = Config(str(backend_dir / "alembic.ini"))
+    cfg.set_main_option("script_location", str(backend_dir / "alembic"))
+    return cfg
+
+
+def _run_migrations() -> None:
+    """Bring the schema to the latest Alembic revision (runs synchronously)."""
+    from alembic import command
+
+    cfg = _alembic_config()
+
+    # Decide between stamping and upgrading by inspecting the current DB.
+    sync_engine = create_engine(_sync_db_url())
+    try:
+        with sync_engine.connect() as conn:
+            insp = inspect(conn)
+            has_version = insp.has_table("alembic_version")
+            has_legacy_schema = insp.has_table("projects")
+    finally:
+        sync_engine.dispose()
+
+    if not has_version and has_legacy_schema:
+        # A database created before Alembic was adopted: the tables already
+        # exist, so just record the current revision without re-creating them.
+        logger.info("Existing pre-Alembic database detected; stamping to head")
+        command.stamp(cfg, "head")
+    else:
+        # Fresh database (the baseline migration creates everything) or an
+        # already-tracked one (any pending migrations are applied).
+        command.upgrade(cfg, "head")
+
+
 async def init_db() -> None:
-    """Create all tables (for development; use Alembic in production)."""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        # Migrate: add missing columns to existing tables
-        await _migrate_add_columns(conn)
+    """Bring the database schema up to date via Alembic migrations.
 
-
-async def _migrate_add_columns(conn) -> None:
-    """Add new columns to existing tables if they don't exist (SQLite safe)."""
-    migrations = [
-        ("projects", "image_width", "INTEGER"),
-        ("projects", "image_height", "INTEGER"),
-        ("projects", "image_quality", "VARCHAR(20) DEFAULT 'standard' NOT NULL"),
-        ("projects", "image_style", "VARCHAR(20) DEFAULT 'natural' NOT NULL"),
-        ("projects", "image_negative_prompt", "TEXT"),
-        ("projects", "subtitle_enabled", "BOOLEAN DEFAULT 1 NOT NULL"),
-        ("projects", "subtitle_font_size", "INTEGER DEFAULT 18 NOT NULL"),
-        ("projects", "subtitle_font_color", "VARCHAR(20) DEFAULT '#FFFFFF' NOT NULL"),
-        ("projects", "subtitle_outline_width", "INTEGER DEFAULT 1 NOT NULL"),
-        ("projects", "subtitle_position", "VARCHAR(10) DEFAULT 'bottom' NOT NULL"),
-        ("projects", "subtitle_margin_bottom", "INTEGER DEFAULT 30 NOT NULL"),
-        ("projects", "portrait_composite_enabled", "BOOLEAN DEFAULT 1 NOT NULL"),
-        ("projects", "portrait_bg_color", "VARCHAR(20) DEFAULT '#1A1A2E' NOT NULL"),
-        ("projects", "portrait_title_text", "VARCHAR(255)"),
-        ("video_outputs", "video_type", "VARCHAR(20) DEFAULT 'standard' NOT NULL"),
-        ("projects", "tts_voice_id", "VARCHAR(100)"),
-        ("projects", "tts_voice_clone_id", "VARCHAR(36)"),
-        ("voice_clones", "speaker_id", "VARCHAR(100) DEFAULT '' NOT NULL"),
-        ("voice_clones", "training_status", "INTEGER DEFAULT 0 NOT NULL"),
-        ("projects", "portrait_title_font_size", "INTEGER DEFAULT 36 NOT NULL"),
-        ("projects", "portrait_title_y", "INTEGER DEFAULT 82 NOT NULL"),
-        ("projects", "portrait_video_y", "INTEGER DEFAULT 480 NOT NULL"),
-        ("projects", "portrait_subtitle_font_size", "INTEGER DEFAULT 38 NOT NULL"),
-        ("projects", "portrait_subtitle_margin_v", "INTEGER DEFAULT 550 NOT NULL"),
-        ("projects", "cover_prompt", "TEXT"),
-        ("publish_assets", "cover_status", "VARCHAR(20) DEFAULT 'pending' NOT NULL"),
-        ("segments", "script_text", "TEXT"),
-        ("segments", "audio_file", "TEXT"),
-    ]
-    for table, column, col_type in migrations:
-        try:
-            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
-        except Exception:
-            pass  # Column already exists
+    Schema changes are no longer hand-written here. To change the schema,
+    edit the models and run:  alembic revision --autogenerate -m "describe it"
+    then review the generated file. It is applied automatically on next start.
+    """
+    await asyncio.to_thread(_run_migrations)

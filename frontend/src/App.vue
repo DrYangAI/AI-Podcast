@@ -33,6 +33,10 @@
           <el-icon><Setting /></el-icon>
           <span>模型配置</span>
         </el-menu-item>
+        <el-menu-item index="/settings/prompts">
+          <el-icon><EditPen /></el-icon>
+          <span>提示词模板</span>
+        </el-menu-item>
       </el-menu>
     </el-aside>
     <el-container>

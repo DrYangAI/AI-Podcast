@@ -96,7 +96,52 @@ class PortraitCompositeService:
                 "video_y": getattr(project, "portrait_video_y", VIDEO_Y_OFFSET),
                 "subtitle_font_size": getattr(project, "portrait_subtitle_font_size", 38),
                 "subtitle_margin_v": getattr(project, "portrait_subtitle_margin_v", 550),
+                "title_color": getattr(project, "portrait_title_color", "#FFFFFF"),
+                "title_outline_color": getattr(project, "portrait_title_outline_color", "#000000"),
+                "title_outline_width": getattr(project, "portrait_title_outline_width", 2),
+                "title_shadow_enabled": getattr(project, "portrait_title_shadow_enabled", True),
+                "title_shadow_color": getattr(project, "portrait_title_shadow_color", "#000000"),
+                "title_shadow_opacity": getattr(project, "portrait_title_shadow_opacity", 0.5),
+                "title_shadow_x": getattr(project, "portrait_title_shadow_x", 2),
+                "title_shadow_y": getattr(project, "portrait_title_shadow_y", 2),
+                "sub_title_text": getattr(project, "portrait_sub_title_text", None),
+                "sub_title_font_size": getattr(project, "portrait_sub_title_font_size", 24),
+                "sub_title_color": getattr(project, "portrait_sub_title_color", "#CCCCCC"),
+                "sub_title_y": getattr(project, "portrait_sub_title_y", 130),
+                "title_bg_enabled": getattr(project, "portrait_title_bg_enabled", False),
+                "title_bg_color": getattr(project, "portrait_title_bg_color", "#000000"),
+                "title_bg_opacity": getattr(project, "portrait_title_bg_opacity", 0.5),
+                "title_bg_padding": getattr(project, "portrait_title_bg_padding", 20),
+                "title_bg_shape": getattr(project, "portrait_title_bg_shape", "rect"),
+                "title_bg_radius": getattr(project, "portrait_title_bg_radius", 16),
+                "title_bg_skew": getattr(project, "portrait_title_bg_skew", 10),
             }
+
+            # Generate title overlay PNG if using non-rect background shape
+            title_overlay_path = None
+            title_bg_shape = portrait_layout.get("title_bg_shape", "rect")
+            if portrait_layout.get("title_bg_enabled") and title_bg_shape != "rect":
+                from ..utils.title_overlay import generate_title_overlay
+                title_overlay_path = output_dir / f"_title_overlay_{project_id}.png"
+                generate_title_overlay(
+                    title=title_text,
+                    sub_title=portrait_layout.get("sub_title_text"),
+                    canvas_width=PORTRAIT_WIDTH,
+                    bg_color=portrait_layout.get("title_bg_color", "#FFD700"),
+                    bg_opacity=portrait_layout.get("title_bg_opacity", 0.9),
+                    bg_shape=title_bg_shape,
+                    bg_radius=portrait_layout.get("title_bg_radius", 16),
+                    bg_skew=portrait_layout.get("title_bg_skew", 10),
+                    title_font_size=portrait_layout.get("title_font_size", 52),
+                    title_color=portrait_layout.get("title_color", "#000000"),
+                    title_outline_width=portrait_layout.get("title_outline_width", 0),
+                    title_outline_color=portrait_layout.get("title_outline_color", "#000000"),
+                    sub_title_font_size=portrait_layout.get("sub_title_font_size", 24),
+                    sub_title_color=portrait_layout.get("sub_title_color", "#333333"),
+                    padding=portrait_layout.get("title_bg_padding", 30),
+                    output_path=title_overlay_path,
+                )
+                logger.info("Generated title overlay: %s", title_overlay_path)
 
             # 构建 FFmpeg 命令
             command = self._build_ffmpeg_command(
@@ -116,6 +161,7 @@ class PortraitCompositeService:
                     "codec": settings.output.video_quality.codec,
                     "audio_codec": settings.output.video_quality.audio_codec,
                 },
+                title_overlay_path=title_overlay_path,
             )
 
             logger.info(f"Portrait composite FFmpeg command: {' '.join(command)}")
@@ -157,6 +203,7 @@ class PortraitCompositeService:
         portrait_layout: dict,
         subtitle_config: dict,
         video_quality: dict,
+        title_overlay_path: Path | None = None,
     ) -> list[str]:
         """Build the FFmpeg command for portrait compositing.
 
@@ -181,6 +228,28 @@ class PortraitCompositeService:
         portrait_font_size = portrait_layout.get("subtitle_font_size", 38)
         subtitle_margin_v = portrait_layout.get("subtitle_margin_v", 550)
 
+        # 标题样式
+        title_color = portrait_layout.get("title_color", "#FFFFFF")
+        title_outline_color = portrait_layout.get("title_outline_color", "#000000")
+        title_outline_w = portrait_layout.get("title_outline_width", 2)
+        title_shadow_enabled = portrait_layout.get("title_shadow_enabled", True)
+        title_shadow_color = portrait_layout.get("title_shadow_color", "#000000")
+        title_shadow_opacity = portrait_layout.get("title_shadow_opacity", 0.5)
+        title_shadow_x = portrait_layout.get("title_shadow_x", 2)
+        title_shadow_y = portrait_layout.get("title_shadow_y", 2)
+
+        # 副标题
+        sub_title_text = portrait_layout.get("sub_title_text")
+        sub_title_font_size = portrait_layout.get("sub_title_font_size", 24)
+        sub_title_color = portrait_layout.get("sub_title_color", "#CCCCCC")
+        sub_title_y = portrait_layout.get("sub_title_y", 130)
+
+        # 标题背景装饰
+        title_bg_enabled = portrait_layout.get("title_bg_enabled", False)
+        title_bg_color = portrait_layout.get("title_bg_color", "#000000")
+        title_bg_opacity = portrait_layout.get("title_bg_opacity", 0.5)
+        title_bg_padding = portrait_layout.get("title_bg_padding", 20)
+
         font_color = subtitle_config.get("font_color", "#FFFFFF")
         outline_width = subtitle_config.get("outline_width", 2)
 
@@ -203,29 +272,83 @@ class PortraitCompositeService:
             f"[bg][vid]overlay=0:{video_y}:shortest=1[canvas]"
         )
 
-        # ④ 绘制标题文本（使用可配置的 title_y 和 title_font_size）
+        # ④ 标题渲染
         font_file = "/System/Library/Fonts/STHeiti Medium.ttc"
+        current_label = "canvas"
+        # Input index: 0=video, 1=title_overlay (if used)
+        overlay_input_idx = 1
 
-        filter_parts.append(
-            f"[canvas]drawtext="
-            f"text='{safe_title}':"
-            f"fontfile='{font_file}':"
-            f"fontsize={title_font_size}:"
-            f"fontcolor=white:"
-            f"x=(w-text_w)/2:"
-            f"y={title_y}:"
-            f"shadowcolor=black@0.5:shadowx=2:shadowy=2"
-            f"[titled]"
-        )
+        if title_overlay_path and title_overlay_path.exists():
+            # ── Overlay mode: Pillow PNG contains background + text together ──
+            filter_parts.append(
+                f"[{current_label}][{overlay_input_idx}:v]overlay=(W-w)/2:{title_y}[titled]"
+            )
+            current_label = "titled"
+        else:
+            # ── Drawtext mode ──
+            # Build common parts
+            shadow_part = ""
+            if title_shadow_enabled:
+                shadow_part = (
+                    f":shadowcolor={title_shadow_color}@{title_shadow_opacity}"
+                    f":shadowx={title_shadow_x}:shadowy={title_shadow_y}"
+                )
+
+            # Box background (auto-wraps text, stays coupled)
+            box_part = ""
+            if title_bg_enabled:
+                box_part = (
+                    f":box=1:boxcolor={title_bg_color}@{title_bg_opacity}"
+                    f":boxborderw={title_bg_padding}"
+                )
+
+            filter_parts.append(
+                f"[{current_label}]drawtext="
+                f"text='{safe_title}':"
+                f"fontfile='{font_file}':"
+                f"fontsize={title_font_size}:"
+                f"fontcolor={title_color}:"
+                f"borderw={title_outline_w}:bordercolor={title_outline_color}:"
+                f"x=(w-text_w)/2:"
+                f"y={title_y}"
+                f"{shadow_part}{box_part}"
+                f"[titled]"
+            )
+            current_label = "titled"
+
+            # 副标题
+            if sub_title_text and sub_title_text.strip():
+                safe_sub = sub_title_text.replace("\\", "\\\\").replace("'", "'\\''").replace(":", "\\:")
+                if len(sub_title_text) > 40:
+                    safe_sub_display = sub_title_text[:38] + "…"
+                    safe_sub = safe_sub_display.replace("\\", "\\\\").replace("'", "'\\''").replace(":", "\\:")
+                sub_box_part = ""
+                if title_bg_enabled:
+                    sub_box_part = (
+                        f":box=1:boxcolor={title_bg_color}@{title_bg_opacity}"
+                        f":boxborderw={title_bg_padding}"
+                    )
+                filter_parts.append(
+                    f"[titled]drawtext="
+                    f"text='{safe_sub}':"
+                    f"fontfile='{font_file}':"
+                    f"fontsize={sub_title_font_size}:"
+                    f"fontcolor={sub_title_color}:"
+                    f"x=(w-text_w)/2:"
+                    f"y={sub_title_y}"
+                    f"{sub_box_part}"
+                    f"[subtitled]"
+                )
+                current_label = "subtitled"
 
         # ⑤ 添加字幕（使用可配置的 portrait_font_size 和 subtitle_margin_v）
-        final_label = "titled"
+        final_label = current_label
         if srt_path and srt_path.exists():
             safe_srt = str(srt_path).replace("\\", "/").replace(":", "\\\\:")
             pc = _hex_color_to_ass(font_color)
             oc = _hex_color_to_ass("#000000")
             filter_parts.append(
-                f"[titled]subtitles='{safe_srt}':force_style="
+                f"[{current_label}]subtitles='{safe_srt}':force_style="
                 f"'FontName=PingFang SC,"
                 f"FontSize={portrait_font_size},"
                 f"PrimaryColour={pc},"
@@ -248,6 +371,10 @@ class PortraitCompositeService:
         args = [
             "ffmpeg", "-y",
             "-i", str(input_video),
+        ]
+        if title_overlay_path and title_overlay_path.exists():
+            args.extend(["-i", str(title_overlay_path)])
+        args.extend([
             "-filter_complex", filter_complex,
             "-map", f"[{final_label}]",
             "-map", "0:a",
@@ -258,7 +385,7 @@ class PortraitCompositeService:
             "-shortest",
             "-pix_fmt", "yuv420p",
             str(output_path),
-        ]
+        ])
         return args
 
     async def _generate_srt(self, project_id: str, settings) -> Path | None:

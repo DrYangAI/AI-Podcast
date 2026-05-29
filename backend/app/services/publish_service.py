@@ -53,7 +53,8 @@ class PublishService:
                 raise ValueError("No text provider configured")
 
             platform_copy = await self._generate_copy(text_config, settings,
-                                                        article.title, article.content, project.topic)
+                                                        article.title, article.content, project.topic,
+                                                        project_metadata_json=project.metadata_json)
 
             # --- 2. Generate cover images ---
             output_dir = Path(settings.storage.base_dir) / "covers" / project_id
@@ -73,6 +74,7 @@ class PublishService:
                         project.topic, article.title, output_dir,
                         text_config=text_config,
                         override_prompt=project.cover_prompt,
+                        project_metadata_json=project.metadata_json,
                     )
                 except Exception as e:
                     logger.error(f"Cover image generation failed: {e}")
@@ -188,6 +190,7 @@ class PublishService:
                     topic, title, output_dir,
                     text_config=text_config,
                     override_prompt=prompt_to_use,
+                    project_metadata_json=project.metadata_json,
                 )
 
                 # Save prompt
@@ -360,7 +363,8 @@ class PublishService:
     # ---- Internal methods ----
 
     async def _generate_copy(self, text_config: ProviderConfig, settings,
-                               title: str, article: str, topic: str) -> dict[str, dict]:
+                               title: str, article: str, topic: str,
+                               project_metadata_json: str | None = None) -> dict[str, dict]:
         """Call text provider to generate platform copy."""
         api_key = text_config.api_key
         if not api_key:
@@ -380,13 +384,24 @@ class PublishService:
             config=extra_config,
         )
 
-        return await text_provider.generate_publish_copy(title, article, topic)
+        # Resolve prompt config for publish_copy
+        prompt_config = None
+        try:
+            from ..services.prompt_template_service import PromptTemplateService
+            from ..database import async_session_factory as _sf
+            async with _sf() as resolve_db:
+                prompt_config = await PromptTemplateService.resolve(resolve_db, "publish_copy", project_metadata_json)
+        except Exception:
+            logger.debug("Failed to resolve publish_copy prompt config, using default")
+
+        return await text_provider.generate_publish_copy(title, article, topic, prompt_config=prompt_config)
 
     async def _generate_cover_images(self, image_config, settings,
                                        topic: str, title: str,
                                        output_dir: Path,
                                        text_config=None,
                                        override_prompt: str | None = None,
+                                       project_metadata_json: str | None = None,
                                        ) -> tuple[Path | None, Path | None, str]:
         """Generate vertical (3:4) and horizontal (16:9) cover base images.
 
@@ -440,7 +455,21 @@ class PublishService:
                 model_id=text_config.model_id or "",
                 config=extra_config_text,
             )
-            base_prompt = await text_provider.generate_cover_prompt(topic, title, "3:4")
+            # Resolve cover_prompt config
+            cover_prompt_config = None
+            try:
+                from ..services.prompt_template_service import PromptTemplateService
+                from ..database import async_session_factory as _sf
+                async with _sf() as resolve_db:
+                    cover_prompt_config = await PromptTemplateService.resolve(
+                        resolve_db, "cover_prompt", project_metadata_json,
+                    )
+            except Exception:
+                logger.debug("Failed to resolve cover_prompt config, using default")
+
+            base_prompt = await text_provider.generate_cover_prompt(
+                topic, title, "3:4", prompt_config=cover_prompt_config,
+            )
 
         if not base_prompt:
             # Last resort: construct a simple prompt

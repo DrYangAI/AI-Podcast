@@ -150,6 +150,29 @@ class AudioService:
                 segment_audio_paths = []
                 total_duration = 0.0
 
+                # Synthesize intro if configured
+                intro_audio_path = None
+                intro_duration = 0.0
+                intro_text_val = getattr(project, 'intro_text', None)
+                if intro_text_val and intro_text_val.strip():
+                    intro_clean = clean_script_for_tts(intro_text_val)
+                    if intro_clean:
+                        intro_dir = output_dir / "segments" / "seg_intro"
+                        intro_dir.mkdir(parents=True, exist_ok=True)
+                        intro_output = intro_dir / "speech.mp3"
+                        logger.info("Synthesizing intro: %d chars", len(intro_clean))
+                        intro_response = await tts_provider.synthesize_script(
+                            script=intro_clean,
+                            voice_id=voice_id,
+                            output_path=intro_output,
+                            use_icl=use_icl,
+                            max_chunk_chars=max_chunk,
+                        )
+                        intro_audio_path = intro_output
+                        intro_duration = intro_response.duration
+                        total_duration += intro_duration
+                        logger.info("Intro done: %.1fs", intro_duration)
+
                 for seg in segments:
                     seg_text = clean_script_for_tts(seg.script_text)
                     if not seg_text.strip():
@@ -175,35 +198,103 @@ class AudioService:
                     segment_audio_paths.append(seg_output)
                     logger.info("Segment %d done: %.1fs", seg.segment_order, seg_response.duration)
 
-                # Concatenate all segment audios into final speech.mp3
-                if len(segment_audio_paths) > 1:
+                # Synthesize outro if configured
+                outro_audio_path = None
+                outro_duration = 0.0
+                outro_text_val = getattr(project, 'outro_text', None)
+                if outro_text_val and outro_text_val.strip():
+                    outro_clean = clean_script_for_tts(outro_text_val)
+                    if outro_clean:
+                        outro_dir = output_dir / "segments" / "seg_outro"
+                        outro_dir.mkdir(parents=True, exist_ok=True)
+                        outro_output = outro_dir / "speech.mp3"
+                        logger.info("Synthesizing outro: %d chars", len(outro_clean))
+                        outro_response = await tts_provider.synthesize_script(
+                            script=outro_clean,
+                            voice_id=voice_id,
+                            output_path=outro_output,
+                            use_icl=use_icl,
+                            max_chunk_chars=max_chunk,
+                        )
+                        outro_audio_path = outro_output
+                        outro_duration = outro_response.duration
+                        total_duration += outro_duration
+                        logger.info("Outro done: %.1fs", outro_duration)
+
+                # Build final audio path list: intro + segments + outro
+                all_audio_paths = []
+                if intro_audio_path:
+                    all_audio_paths.append(intro_audio_path)
+                all_audio_paths.extend(segment_audio_paths)
+                if outro_audio_path:
+                    all_audio_paths.append(outro_audio_path)
+
+                # Concatenate all audio into final speech.mp3
+                if len(all_audio_paths) > 1:
                     total_duration = await TTSProvider._concat_audio(
-                        segment_audio_paths, output_path
+                        all_audio_paths, output_path
                     )
-                elif segment_audio_paths:
+                elif all_audio_paths:
                     import shutil
-                    shutil.copy2(segment_audio_paths[0], output_path)
+                    shutil.copy2(all_audio_paths[0], output_path)
 
                 # Write chunks.json for chunk management UI compatibility
                 chunks_dir = output_dir / "chunks"
                 chunks_dir.mkdir(parents=True, exist_ok=True)
                 chunk_entries = []
+                chunk_idx = 0
+
+                # Intro chunk
+                if intro_audio_path and intro_text_val:
+                    intro_clean = clean_script_for_tts(intro_text_val)
+                    chunk_file = f"chunk_{chunk_idx:03d}.mp3"
+                    import shutil as _shutil
+                    _shutil.copy2(intro_audio_path, chunks_dir / chunk_file)
+                    chunk_entries.append({
+                        "index": chunk_idx,
+                        "text": intro_clean,
+                        "file": chunk_file,
+                        "duration": intro_duration,
+                        "speed": len(intro_clean) / intro_duration if intro_duration else 0.0,
+                        "chars": len(intro_clean),
+                        "type": "intro",
+                    })
+                    chunk_idx += 1
+
                 active_segments = [s for s in segments if s.script_text and s.script_text.strip()]
-                for idx, seg in enumerate(active_segments):
-                    chunk_file = f"chunk_{idx:03d}.mp3"
+                for seg in active_segments:
+                    chunk_file = f"chunk_{chunk_idx:03d}.mp3"
                     seg_audio = Path(seg.audio_file) if seg.audio_file else None
                     if seg_audio and seg_audio.exists():
                         import shutil as _shutil
                         _shutil.copy2(seg_audio, chunks_dir / chunk_file)
                     seg_clean = clean_script_for_tts(seg.script_text)
                     chunk_entries.append({
-                        "index": idx,
+                        "index": chunk_idx,
                         "text": seg_clean,
                         "file": chunk_file,
                         "duration": seg.duration_hint or 0.0,
                         "speed": len(seg_clean) / seg.duration_hint if seg.duration_hint else 0.0,
                         "chars": len(seg_clean),
                     })
+                    chunk_idx += 1
+
+                # Outro chunk
+                if outro_audio_path and outro_text_val:
+                    outro_clean = clean_script_for_tts(outro_text_val)
+                    chunk_file = f"chunk_{chunk_idx:03d}.mp3"
+                    import shutil as _shutil
+                    _shutil.copy2(outro_audio_path, chunks_dir / chunk_file)
+                    chunk_entries.append({
+                        "index": chunk_idx,
+                        "text": outro_clean,
+                        "file": chunk_file,
+                        "duration": outro_duration,
+                        "speed": len(outro_clean) / outro_duration if outro_duration else 0.0,
+                        "chars": len(outro_clean),
+                        "type": "outro",
+                    })
+                    chunk_idx += 1
                 TTSProvider._save_chunks_json(chunks_dir, chunk_entries, voice_id, use_icl,
                                               voice_display=voice_display or voice_id)
                 logger.info("Wrote chunks.json with %d segment-based chunks", len(chunk_entries))
@@ -282,11 +373,32 @@ class AudioService:
         voice_display = meta.get("voice_display", voice_id)
         use_icl = meta.get("use_icl", False)
 
-        # Get TTS provider
+        # Get TTS provider and refresh chunk text from database
         async with async_session_factory() as db:
             tts_config = await self._get_provider(db, "tts")
             if not tts_config:
                 raise ValueError("No TTS provider configured")
+
+            # Refresh chunk text from database (in case script was edited)
+            seg_result = await db.execute(
+                select(Segment)
+                .where(Segment.project_id == project_id)
+                .order_by(Segment.segment_order)
+            )
+            segments = list(seg_result.scalars().all())
+            if segments and chunk.get("type") not in ("intro", "outro"):
+                # Calculate segment index by skipping intro/outro chunks
+                seg_index = chunk_index
+                for i in range(chunk_index):
+                    if chunks[i].get("type") in ("intro", "outro"):
+                        seg_index -= 1
+                if 0 <= seg_index < len(segments) and segments[seg_index].script_text:
+                    fresh_text = clean_script_for_tts(segments[seg_index].script_text)
+                    if fresh_text != chunk["text"]:
+                        logger.info("Chunk %d text updated from database (was %d chars, now %d chars)",
+                                    chunk_index, len(chunk["text"]), len(fresh_text))
+                        chunk["text"] = fresh_text
+                        chunk["chars"] = len(fresh_text)
 
             # Resolve voice_id: if it's a display name like "clone:XXX",
             # look up the actual speaker_id from VoiceClone table
@@ -397,6 +509,14 @@ class AudioService:
                 audio.file_path = str(output_path)
                 audio.duration = duration
                 audio.status = "completed"
+            else:
+                audio = AudioAsset(
+                    project_id=project_id,
+                    file_path=str(output_path),
+                    duration=duration,
+                    status="completed",
+                )
+                db.add(audio)
 
             # Sync chunk durations back to segments
             seg_result = await db.execute(

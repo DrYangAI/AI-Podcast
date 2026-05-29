@@ -35,11 +35,23 @@ export const sourcesApi = {
     return apiClient.post<{ title: string; content: string; url: string }>('/sources/extract-url', { url })
   },
 
-  getHotRecommendations(sources?: string[], maxResults?: number) {
+  extractPdf(file: File) {
+    const formData = new FormData()
+    formData.append('file', file)
+    return apiClient.post<{ title: string; content: string; filename: string }>(
+      '/sources/extract-pdf',
+      formData,
+      { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 60000 },
+    )
+  },
+
+  getHotRecommendations(sources?: string[], maxResults?: number, providerId?: string, mode?: string) {
     return apiClient.post<HotTopicResponse>('/sources/hotlist/recommend', {
       sources,
       max_results: maxResults || 15,
-    })
+      provider_id: providerId || undefined,
+      mode: mode || 'health',
+    }, { timeout: 120000 })
   },
 
   createProjectFromHotTopic(data: { title: string; health_angle?: string; source_url?: string }) {

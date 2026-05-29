@@ -1,5 +1,6 @@
 """Hot topic scrapers for Chinese platforms."""
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from urllib.parse import quote
@@ -163,17 +164,24 @@ async def scrape_hotlists(
         sources = list(SCRAPERS.keys())
 
     results: dict[str, list[HotTopic]] = {}
+
+    valid_sources = [(k, SCRAPERS[k]) for k in sources if k in SCRAPERS]
+    for k in sources:
+        if k not in SCRAPERS:
+            logger.warning(f"Unknown hotlist source: {k}")
+
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        for source_key in sources:
-            scraper_fn = SCRAPERS.get(source_key)
-            if not scraper_fn:
-                logger.warning(f"Unknown hotlist source: {source_key}")
-                continue
+        async def _run(key: str, fn):
             try:
-                results[source_key] = await scraper_fn(client)
-                logger.info(f"Scraped {len(results[source_key])} topics from {source_key}")
+                topics = await fn(client)
+                logger.info(f"Scraped {len(topics)} topics from {key}")
+                return key, topics
             except Exception as e:
-                logger.error(f"Failed to scrape {source_key}: {e}")
-                results[source_key] = []
+                logger.error(f"Failed to scrape {key}: {e}")
+                return key, []
+
+        pairs = await asyncio.gather(*[_run(k, fn) for k, fn in valid_sources])
+        for key, topics in pairs:
+            results[key] = topics
 
     return results

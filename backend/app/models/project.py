@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, String, Text, DateTime, Integer, func
+from sqlalchemy import Boolean, Float, String, Text, DateTime, Integer, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..database import Base
@@ -40,9 +40,33 @@ class Project(Base):
     portrait_video_y: Mapped[int] = mapped_column(Integer, nullable=False, default=480)
     portrait_subtitle_font_size: Mapped[int] = mapped_column(Integer, nullable=False, default=38)
     portrait_subtitle_margin_v: Mapped[int] = mapped_column(Integer, nullable=False, default=550)
+    portrait_title_color: Mapped[str] = mapped_column(String(20), nullable=False, default="#FFFFFF")
+    portrait_title_outline_color: Mapped[str] = mapped_column(String(20), nullable=False, default="#000000")
+    portrait_title_outline_width: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    portrait_title_shadow_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    portrait_title_shadow_color: Mapped[str] = mapped_column(String(20), nullable=False, default="#000000")
+    portrait_title_shadow_opacity: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    portrait_title_shadow_x: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    portrait_title_shadow_y: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    portrait_sub_title_text: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    portrait_sub_title_font_size: Mapped[int] = mapped_column(Integer, nullable=False, default=24)
+    portrait_sub_title_color: Mapped[str] = mapped_column(String(20), nullable=False, default="#CCCCCC")
+    portrait_sub_title_y: Mapped[int] = mapped_column(Integer, nullable=False, default=130)
+    portrait_title_bg_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    portrait_title_bg_color: Mapped[str] = mapped_column(String(20), nullable=False, default="#000000")
+    portrait_title_bg_opacity: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    portrait_title_bg_padding: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
+    portrait_title_bg_shape: Mapped[str] = mapped_column(String(20), nullable=False, default="rect")
+    portrait_title_bg_radius: Mapped[int] = mapped_column(Integer, nullable=False, default=16)
+    portrait_title_bg_skew: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
     tts_voice_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     tts_voice_clone_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     cover_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    intro_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    outro_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reference_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    use_reference_content: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    user_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
     metadata_json: Mapped[str | None] = mapped_column("metadata", Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

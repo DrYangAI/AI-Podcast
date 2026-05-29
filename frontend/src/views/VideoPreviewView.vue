@@ -6,6 +6,7 @@ import { projectsApi } from '../api/projects'
 import { pipelineApi } from '../api/pipeline'
 import { utilsApi } from '../api/utils'
 import { useProjectStore } from '../stores/project'
+import { settingsApi } from '../api/settings'
 import type { VideoOutput } from '../types/project'
 import { formatDateTime } from '../utils/date'
 
@@ -38,6 +39,25 @@ const portraitSettings = reactive({
   portrait_video_y: 480,
   portrait_subtitle_font_size: 38,
   portrait_subtitle_margin_v: 550,
+  portrait_title_color: '#FFFFFF',
+  portrait_title_outline_color: '#000000',
+  portrait_title_outline_width: 2,
+  portrait_title_shadow_enabled: true,
+  portrait_title_shadow_color: '#000000',
+  portrait_title_shadow_opacity: 0.5,
+  portrait_title_shadow_x: 2,
+  portrait_title_shadow_y: 2,
+  portrait_sub_title_text: '',
+  portrait_sub_title_font_size: 24,
+  portrait_sub_title_color: '#CCCCCC',
+  portrait_sub_title_y: 130,
+  portrait_title_bg_enabled: false,
+  portrait_title_bg_color: '#000000',
+  portrait_title_bg_opacity: 0.5,
+  portrait_title_bg_padding: 20,
+  portrait_title_bg_shape: 'rect',
+  portrait_title_bg_radius: 16,
+  portrait_title_bg_skew: 10,
 })
 
 // 按 video_type 过滤视频
@@ -86,27 +106,73 @@ const previewTitleText = computed(() =>
 
 const previewStyles = computed(() => {
   const s = PREVIEW_SCALE
+  const ps = portraitSettings
+
+  // Build title text-shadow
+  const shadowParts: string[] = []
+  if (ps.portrait_title_shadow_enabled) {
+    const sx = Math.max(1, Math.round(ps.portrait_title_shadow_x * s))
+    const sy = Math.max(1, Math.round(ps.portrait_title_shadow_y * s))
+    shadowParts.push(`${sx}px ${sy}px 2px ${ps.portrait_title_shadow_color}`)
+  }
+  // Outline simulation via text-shadow (4 directions)
+  if (ps.portrait_title_outline_width > 0) {
+    const ow = Math.max(1, Math.round(ps.portrait_title_outline_width * s))
+    const oc = ps.portrait_title_outline_color
+    shadowParts.push(`${ow}px 0 0 ${oc}`, `-${ow}px 0 0 ${oc}`, `0 ${ow}px 0 ${oc}`, `0 -${ow}px 0 ${oc}`)
+  }
+
+  // Title background decoration (applied as inline background on title text)
+  const isParallelogram = ps.portrait_title_bg_shape === 'parallelogram'
+  const titleBgInline: Record<string, string> = {}
+  if (ps.portrait_title_bg_enabled) {
+    const pad = Math.max(2, Math.round(ps.portrait_title_bg_padding * s))
+    Object.assign(titleBgInline, {
+      backgroundColor: ps.portrait_title_bg_color,
+      padding: `${pad}px ${pad * 2}px`,
+      borderRadius: Math.round(ps.portrait_title_bg_radius * s) + 'px',
+      display: 'inline-block',
+      opacity: String(ps.portrait_title_bg_opacity),
+      transform: isParallelogram ? `skewX(-${ps.portrait_title_bg_skew}deg)` : 'none',
+    })
+  }
+
   return {
     canvas: {
       width: PREVIEW_W + 'px',
       height: PREVIEW_H + 'px',
-      backgroundColor: portraitSettings.portrait_bg_color,
+      backgroundColor: ps.portrait_bg_color,
       position: 'relative' as const,
       overflow: 'hidden',
       borderRadius: '8px',
       border: '1px solid #dcdfe6',
       flexShrink: 0,
     },
+    titleBgInline,
     title: {
       position: 'absolute' as const,
-      top: Math.round(portraitSettings.portrait_title_y * s) + 'px',
+      top: Math.round(ps.portrait_title_y * s) + 'px',
       left: '0',
       right: '0',
       textAlign: 'center' as const,
-      fontSize: Math.max(8, Math.round(portraitSettings.portrait_title_font_size * s)) + 'px',
-      color: '#FFFFFF',
+      fontSize: Math.max(8, Math.round(ps.portrait_title_font_size * s)) + 'px',
+      color: ps.portrait_title_color,
       fontWeight: 'bold' as const,
-      textShadow: '1px 1px 2px rgba(0,0,0,0.5)',
+      textShadow: shadowParts.join(', ') || 'none',
+      padding: '0 6px',
+      lineHeight: '1.3',
+      whiteSpace: 'nowrap' as const,
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+    },
+    subTitle: {
+      position: 'absolute' as const,
+      top: Math.round(ps.portrait_sub_title_y * s) + 'px',
+      left: '0',
+      right: '0',
+      textAlign: 'center' as const,
+      fontSize: Math.max(7, Math.round(ps.portrait_sub_title_font_size * s)) + 'px',
+      color: ps.portrait_sub_title_color,
       padding: '0 6px',
       lineHeight: '1.3',
       whiteSpace: 'nowrap' as const,
@@ -115,7 +181,7 @@ const previewStyles = computed(() => {
     },
     video: {
       position: 'absolute' as const,
-      top: Math.round(portraitSettings.portrait_video_y * s) + 'px',
+      top: Math.round(ps.portrait_video_y * s) + 'px',
       left: '0',
       width: '100%',
       height: Math.round(VIDEO_FULL_H * s) + 'px',
@@ -128,11 +194,11 @@ const previewStyles = computed(() => {
     },
     subtitle: {
       position: 'absolute' as const,
-      bottom: Math.round(portraitSettings.portrait_subtitle_margin_v * s) + 'px',
+      bottom: Math.round(ps.portrait_subtitle_margin_v * s) + 'px',
       left: '0',
       right: '0',
       textAlign: 'center' as const,
-      fontSize: Math.max(7, Math.round(portraitSettings.portrait_subtitle_font_size * s)) + 'px',
+      fontSize: Math.max(7, Math.round(ps.portrait_subtitle_font_size * s)) + 'px',
       color: '#FFFFFF',
       textShadow: '1px 1px 2px rgba(0,0,0,0.8)',
       padding: '0 8px',
@@ -167,6 +233,25 @@ onMounted(async () => {
     portraitSettings.portrait_video_y = store.currentProject.portrait_video_y ?? 480
     portraitSettings.portrait_subtitle_font_size = store.currentProject.portrait_subtitle_font_size ?? 38
     portraitSettings.portrait_subtitle_margin_v = store.currentProject.portrait_subtitle_margin_v ?? 550
+    portraitSettings.portrait_title_color = store.currentProject.portrait_title_color ?? '#FFFFFF'
+    portraitSettings.portrait_title_outline_color = store.currentProject.portrait_title_outline_color ?? '#000000'
+    portraitSettings.portrait_title_outline_width = store.currentProject.portrait_title_outline_width ?? 2
+    portraitSettings.portrait_title_shadow_enabled = store.currentProject.portrait_title_shadow_enabled ?? true
+    portraitSettings.portrait_title_shadow_color = store.currentProject.portrait_title_shadow_color ?? '#000000'
+    portraitSettings.portrait_title_shadow_opacity = store.currentProject.portrait_title_shadow_opacity ?? 0.5
+    portraitSettings.portrait_title_shadow_x = store.currentProject.portrait_title_shadow_x ?? 2
+    portraitSettings.portrait_title_shadow_y = store.currentProject.portrait_title_shadow_y ?? 2
+    portraitSettings.portrait_sub_title_text = store.currentProject.portrait_sub_title_text ?? ''
+    portraitSettings.portrait_sub_title_font_size = store.currentProject.portrait_sub_title_font_size ?? 24
+    portraitSettings.portrait_sub_title_color = store.currentProject.portrait_sub_title_color ?? '#CCCCCC'
+    portraitSettings.portrait_sub_title_y = store.currentProject.portrait_sub_title_y ?? 130
+    portraitSettings.portrait_title_bg_enabled = store.currentProject.portrait_title_bg_enabled ?? false
+    portraitSettings.portrait_title_bg_color = store.currentProject.portrait_title_bg_color ?? '#000000'
+    portraitSettings.portrait_title_bg_opacity = store.currentProject.portrait_title_bg_opacity ?? 0.5
+    portraitSettings.portrait_title_bg_padding = store.currentProject.portrait_title_bg_padding ?? 20
+    portraitSettings.portrait_title_bg_shape = store.currentProject.portrait_title_bg_shape ?? 'rect'
+    portraitSettings.portrait_title_bg_radius = store.currentProject.portrait_title_bg_radius ?? 16
+    portraitSettings.portrait_title_bg_skew = store.currentProject.portrait_title_bg_skew ?? 10
   }
   // 如果有竖屏视频，默认切到竖屏 Tab
   if (portraitVideos.value.length > 0) {
@@ -264,17 +349,40 @@ async function saveSubtitleSettings() {
   }
 }
 
+function getPortraitPayload() {
+  return {
+    portrait_bg_color: portraitSettings.portrait_bg_color,
+    portrait_title_text: portraitSettings.portrait_title_text || null,
+    portrait_title_font_size: portraitSettings.portrait_title_font_size,
+    portrait_title_y: portraitSettings.portrait_title_y,
+    portrait_video_y: portraitSettings.portrait_video_y,
+    portrait_subtitle_font_size: portraitSettings.portrait_subtitle_font_size,
+    portrait_subtitle_margin_v: portraitSettings.portrait_subtitle_margin_v,
+    portrait_title_color: portraitSettings.portrait_title_color,
+    portrait_title_outline_color: portraitSettings.portrait_title_outline_color,
+    portrait_title_outline_width: portraitSettings.portrait_title_outline_width,
+    portrait_title_shadow_enabled: portraitSettings.portrait_title_shadow_enabled,
+    portrait_title_shadow_color: portraitSettings.portrait_title_shadow_color,
+    portrait_title_shadow_opacity: portraitSettings.portrait_title_shadow_opacity,
+    portrait_title_shadow_x: portraitSettings.portrait_title_shadow_x,
+    portrait_title_shadow_y: portraitSettings.portrait_title_shadow_y,
+    portrait_sub_title_text: portraitSettings.portrait_sub_title_text || null,
+    portrait_sub_title_font_size: portraitSettings.portrait_sub_title_font_size,
+    portrait_sub_title_color: portraitSettings.portrait_sub_title_color,
+    portrait_sub_title_y: portraitSettings.portrait_sub_title_y,
+    portrait_title_bg_enabled: portraitSettings.portrait_title_bg_enabled,
+    portrait_title_bg_color: portraitSettings.portrait_title_bg_color,
+    portrait_title_bg_opacity: portraitSettings.portrait_title_bg_opacity,
+    portrait_title_bg_padding: portraitSettings.portrait_title_bg_padding,
+    portrait_title_bg_shape: portraitSettings.portrait_title_bg_shape,
+    portrait_title_bg_radius: portraitSettings.portrait_title_bg_radius,
+    portrait_title_bg_skew: portraitSettings.portrait_title_bg_skew,
+  }
+}
+
 async function savePortraitSettings() {
   try {
-    await projectsApi.update(projectId.value, {
-      portrait_bg_color: portraitSettings.portrait_bg_color,
-      portrait_title_text: portraitSettings.portrait_title_text || null,
-      portrait_title_font_size: portraitSettings.portrait_title_font_size,
-      portrait_title_y: portraitSettings.portrait_title_y,
-      portrait_video_y: portraitSettings.portrait_video_y,
-      portrait_subtitle_font_size: portraitSettings.portrait_subtitle_font_size,
-      portrait_subtitle_margin_v: portraitSettings.portrait_subtitle_margin_v,
-    } as any)
+    await projectsApi.update(projectId.value, getPortraitPayload() as any)
     ElMessage.success('竖屏设置已保存')
     portraitDialogVisible.value = false
     await store.loadProject(projectId.value)
@@ -283,9 +391,36 @@ async function savePortraitSettings() {
   }
 }
 
+async function savePortraitAsGlobal() {
+  try {
+    await settingsApi.setDefaults('portrait', {
+      portrait_composite_enabled: store.currentProject?.portrait_composite_enabled ?? true,
+      ...getPortraitPayload(),
+    })
+    ElMessage.success('已保存为全局默认，新项目将自动使用这些设置')
+  } catch {
+    ElMessage.error('保存全局默认失败')
+  }
+}
+
 function selectVideo(videoId: string) {
   activeVideoId.value = videoId
   cacheBuster.value = Date.now()
+}
+
+async function handleDeleteVideo(videoId: string) {
+  try {
+    await projectsApi.deleteVideo(projectId.value, videoId)
+    // Reset active selection so it falls back to latest
+    if (activeVideoId.value === videoId) {
+      activeVideoId.value = null
+    }
+    ElMessage.success('已删除')
+    await fetchVideos()
+    cacheBuster.value = Date.now()
+  } catch {
+    ElMessage.error('删除失败')
+  }
 }
 
 function formatSize(bytes: number | null) {
@@ -326,7 +461,7 @@ function formatDuration(seconds: number | null) {
             <el-icon><VideoCamera /></el-icon> {{ portraitVideos.length > 0 ? '重新合成' : '合成竖屏' }}
           </el-button>
         </template>
-        <el-button v-if="videos.length > 0 && videos[0].file_path" @click="utilsApi.openFolder(videos[0].file_path)" size="small">
+        <el-button v-if="videos.length > 0 && videos[0]?.file_path" @click="utilsApi.openFolder(videos[0]!.file_path)" size="small">
           <el-icon><FolderOpened /></el-icon> 打开目录
         </el-button>
       </div>
@@ -413,9 +548,24 @@ function formatDuration(seconds: number | null) {
         <el-table-column label="生成时间">
           <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column label="" width="60">
+        <el-table-column label="" width="120">
           <template #default="{ row }">
-            <el-tag v-if="activeVideo?.id === row.id" type="primary" size="small">当前</el-tag>
+            <div style="display: flex; align-items: center; gap: 4px;">
+              <el-tag v-if="activeVideo?.id === row.id" type="primary" size="small">当前</el-tag>
+              <el-popconfirm
+                v-if="activeVideo?.id !== row.id"
+                title="确定删除这个历史版本？"
+                confirm-button-text="删除"
+                cancel-button-text="取消"
+                @confirm="handleDeleteVideo(row.id)"
+              >
+                <template #reference>
+                  <el-button text size="small" type="danger" @click.stop>
+                    <el-icon><Delete /></el-icon>
+                  </el-button>
+                </template>
+              </el-popconfirm>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -478,13 +628,19 @@ function formatDuration(seconds: number | null) {
     </el-dialog>
 
     <!-- 竖屏设置对话框 -->
-    <el-dialog v-model="portraitDialogVisible" title="竖屏合成设置" width="880px">
+    <el-dialog v-model="portraitDialogVisible" title="竖屏合成设置" width="920px">
       <div style="display: flex; gap: 24px;">
         <!-- 左侧：实时预览 -->
         <div style="display: flex; flex-direction: column; align-items: center; gap: 8px;">
           <div :style="previewStyles.canvas">
-            <!-- 标题 -->
-            <div :style="previewStyles.title">{{ previewTitleText }}</div>
+            <!-- 主标题（背景装饰自动包裹文字） -->
+            <div :style="previewStyles.title">
+              <span :style="previewStyles.titleBgInline">{{ previewTitleText }}</span>
+            </div>
+            <!-- 副标题 -->
+            <div v-if="portraitSettings.portrait_sub_title_text?.trim()" :style="previewStyles.subTitle">
+              {{ portraitSettings.portrait_sub_title_text }}
+            </div>
             <!-- 16:9 视频占位 -->
             <div :style="previewStyles.video">
               <span>16:9 视频画面</span>
@@ -492,26 +648,26 @@ function formatDuration(seconds: number | null) {
             <!-- 字幕示例 -->
             <div :style="previewStyles.subtitle">这里是字幕示例文本</div>
           </div>
-          <span style="font-size: 11px; color: #909399;">实时布局预览 (1080×1920)</span>
+          <span style="font-size: 11px; color: #909399;">实时布局预览 (1080x1920)</span>
         </div>
 
-        <!-- 右侧：控件 -->
-        <div style="flex: 1; min-width: 0;">
+        <!-- 右侧：控件（可滚动） -->
+        <div style="flex: 1; min-width: 0; max-height: 520px; overflow-y: auto; padding-right: 8px;">
           <el-form label-width="110px" label-position="left">
             <el-form-item label="背景颜色">
               <el-color-picker v-model="portraitSettings.portrait_bg_color" />
               <span style="margin-left: 8px; font-size: 13px; color: #909399;">{{ portraitSettings.portrait_bg_color }}</span>
             </el-form-item>
+
+            <el-divider content-position="left">主标题</el-divider>
             <el-form-item label="标题文本">
               <el-input v-model="portraitSettings.portrait_title_text"
                 placeholder="留空则使用项目标题"
                 maxlength="30" show-word-limit />
             </el-form-item>
-
-            <el-divider content-position="left">标题布局</el-divider>
             <el-form-item label="标题字号">
               <div style="width: 100%; display: flex; align-items: center; gap: 12px;">
-                <el-slider v-model="portraitSettings.portrait_title_font_size" :min="20" :max="60" :step="1" style="flex: 1;" />
+                <el-slider v-model="portraitSettings.portrait_title_font_size" :min="20" :max="80" :step="1" style="flex: 1;" />
                 <span style="min-width: 42px; text-align: right; font-size: 13px; color: #606266;">{{ portraitSettings.portrait_title_font_size }}px</span>
               </div>
             </el-form-item>
@@ -520,8 +676,97 @@ function formatDuration(seconds: number | null) {
                 <el-slider v-model="portraitSettings.portrait_title_y" :min="0" :max="400" :step="5" style="flex: 1;" />
                 <span style="min-width: 42px; text-align: right; font-size: 13px; color: #606266;">{{ portraitSettings.portrait_title_y }}px</span>
               </div>
-              <div style="font-size: 11px; color: #C0C4CC; margin-top: 2px;">值越大标题越往下</div>
             </el-form-item>
+            <el-form-item label="文字颜色">
+              <el-color-picker v-model="portraitSettings.portrait_title_color" />
+              <span style="margin-left: 8px; font-size: 13px; color: #909399;">{{ portraitSettings.portrait_title_color }}</span>
+            </el-form-item>
+            <el-form-item label="描边颜色">
+              <div style="display: flex; align-items: center; gap: 12px;">
+                <el-color-picker v-model="portraitSettings.portrait_title_outline_color" />
+                <span style="font-size: 13px; color: #909399;">宽度</span>
+                <el-slider v-model="portraitSettings.portrait_title_outline_width" :min="0" :max="6" :step="1" style="width: 120px;" />
+                <span style="font-size: 13px; color: #606266;">{{ portraitSettings.portrait_title_outline_width }}px</span>
+              </div>
+            </el-form-item>
+            <el-form-item label="文字阴影">
+              <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                <el-switch v-model="portraitSettings.portrait_title_shadow_enabled" />
+                <template v-if="portraitSettings.portrait_title_shadow_enabled">
+                  <el-color-picker v-model="portraitSettings.portrait_title_shadow_color" size="small" />
+                  <span style="font-size: 12px; color: #909399;">透明度</span>
+                  <el-slider v-model="portraitSettings.portrait_title_shadow_opacity" :min="0.1" :max="1" :step="0.1" style="width: 80px;" />
+                  <span style="font-size: 12px; color: #909399;">X</span>
+                  <el-input-number v-model="portraitSettings.portrait_title_shadow_x" :min="0" :max="10" size="small" style="width: 70px;" />
+                  <span style="font-size: 12px; color: #909399;">Y</span>
+                  <el-input-number v-model="portraitSettings.portrait_title_shadow_y" :min="0" :max="10" size="small" style="width: 70px;" />
+                </template>
+              </div>
+            </el-form-item>
+
+            <el-divider content-position="left">副标题</el-divider>
+            <el-form-item label="副标题文本">
+              <el-input v-model="portraitSettings.portrait_sub_title_text"
+                placeholder="留空则不显示副标题"
+                maxlength="40" show-word-limit />
+            </el-form-item>
+            <el-form-item label="副标题字号">
+              <div style="width: 100%; display: flex; align-items: center; gap: 12px;">
+                <el-slider v-model="portraitSettings.portrait_sub_title_font_size" :min="14" :max="40" :step="1" style="flex: 1;" />
+                <span style="min-width: 42px; text-align: right; font-size: 13px; color: #606266;">{{ portraitSettings.portrait_sub_title_font_size }}px</span>
+              </div>
+            </el-form-item>
+            <el-form-item label="副标题颜色">
+              <el-color-picker v-model="portraitSettings.portrait_sub_title_color" />
+              <span style="margin-left: 8px; font-size: 13px; color: #909399;">{{ portraitSettings.portrait_sub_title_color }}</span>
+            </el-form-item>
+            <el-form-item label="副标题 Y 位置">
+              <div style="width: 100%; display: flex; align-items: center; gap: 12px;">
+                <el-slider v-model="portraitSettings.portrait_sub_title_y" :min="0" :max="400" :step="5" style="flex: 1;" />
+                <span style="min-width: 42px; text-align: right; font-size: 13px; color: #606266;">{{ portraitSettings.portrait_sub_title_y }}px</span>
+              </div>
+            </el-form-item>
+
+            <el-divider content-position="left">标题背景装饰</el-divider>
+            <el-form-item label="启用背景条">
+              <el-switch v-model="portraitSettings.portrait_title_bg_enabled" />
+            </el-form-item>
+            <template v-if="portraitSettings.portrait_title_bg_enabled">
+              <el-form-item label="背景条颜色">
+                <el-color-picker v-model="portraitSettings.portrait_title_bg_color" />
+                <span style="margin-left: 8px; font-size: 13px; color: #909399;">{{ portraitSettings.portrait_title_bg_color }}</span>
+              </el-form-item>
+              <el-form-item label="背景条透明度">
+                <div style="width: 100%; display: flex; align-items: center; gap: 12px;">
+                  <el-slider v-model="portraitSettings.portrait_title_bg_opacity" :min="0.1" :max="1" :step="0.05" style="flex: 1;" />
+                  <span style="min-width: 42px; text-align: right; font-size: 13px; color: #606266;">{{ (portraitSettings.portrait_title_bg_opacity * 100).toFixed(0) }}%</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="背景条内边距">
+                <div style="width: 100%; display: flex; align-items: center; gap: 12px;">
+                  <el-slider v-model="portraitSettings.portrait_title_bg_padding" :min="0" :max="60" :step="2" style="flex: 1;" />
+                  <span style="min-width: 42px; text-align: right; font-size: 13px; color: #606266;">{{ portraitSettings.portrait_title_bg_padding }}px</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="背景形状">
+                <el-radio-group v-model="portraitSettings.portrait_title_bg_shape">
+                  <el-radio-button value="rect">矩形</el-radio-button>
+                  <el-radio-button value="parallelogram">平行四边形</el-radio-button>
+                </el-radio-group>
+              </el-form-item>
+              <el-form-item label="圆角半径">
+                <div style="width: 100%; display: flex; align-items: center; gap: 12px;">
+                  <el-slider v-model="portraitSettings.portrait_title_bg_radius" :min="0" :max="40" :step="2" style="flex: 1;" />
+                  <span style="min-width: 42px; text-align: right; font-size: 13px; color: #606266;">{{ portraitSettings.portrait_title_bg_radius }}px</span>
+                </div>
+              </el-form-item>
+              <el-form-item v-if="portraitSettings.portrait_title_bg_shape === 'parallelogram'" label="倾斜角度">
+                <div style="width: 100%; display: flex; align-items: center; gap: 12px;">
+                  <el-slider v-model="portraitSettings.portrait_title_bg_skew" :min="0" :max="20" :step="1" style="flex: 1;" />
+                  <span style="min-width: 42px; text-align: right; font-size: 13px; color: #606266;">{{ portraitSettings.portrait_title_bg_skew }}°</span>
+                </div>
+              </el-form-item>
+            </template>
 
             <el-divider content-position="left">视频位置</el-divider>
             <el-form-item label="视频 Y 位置">
@@ -529,7 +774,6 @@ function formatDuration(seconds: number | null) {
                 <el-slider v-model="portraitSettings.portrait_video_y" :min="200" :max="800" :step="10" style="flex: 1;" />
                 <span style="min-width: 42px; text-align: right; font-size: 13px; color: #606266;">{{ portraitSettings.portrait_video_y }}px</span>
               </div>
-              <div style="font-size: 11px; color: #C0C4CC; margin-top: 2px;">控制 16:9 画面在竖屏中的起始位置，减小可让标题和字幕更贴近画面</div>
             </el-form-item>
 
             <el-divider content-position="left">字幕布局</el-divider>
@@ -553,8 +797,13 @@ function formatDuration(seconds: number | null) {
         </div>
       </div>
       <template #footer>
-        <el-button @click="portraitDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="savePortraitSettings">保存</el-button>
+        <div style="display: flex; justify-content: space-between; width: 100%;">
+          <el-button type="success" plain @click="savePortraitAsGlobal">保存为全局默认</el-button>
+          <div>
+            <el-button @click="portraitDialogVisible = false">取消</el-button>
+            <el-button type="primary" @click="savePortraitSettings">保存</el-button>
+          </div>
+        </div>
       </template>
     </el-dialog>
   </div>

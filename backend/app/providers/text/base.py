@@ -1,10 +1,13 @@
 """Text generation provider interface."""
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import AsyncIterator
 
 from ..base import BaseProvider
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -38,51 +41,171 @@ class TextProvider(BaseProvider):
 
     async def generate_article(self, topic: str, style: str = "science_popularization",
                                 language: str = "zh-CN",
-                                min_words: int = 300, max_words: int = 1500) -> TextGenerationResponse:
+                                min_words: int = 300, max_words: int = 1500,
+                                prompt_config=None,
+                                reference_content: str | None = None,
+                                user_notes: str | None = None) -> TextGenerationResponse:
         """Generate a health science popularization article."""
-        prompt = self._build_article_prompt(topic, style, language, min_words, max_words)
+        if prompt_config:
+            # Build optional sections
+            reference_section = ""
+            if reference_content:
+                reference_section = (
+                    "\n\n【核心参考资料 - 必须严格遵循】\n"
+                    "以下是用户提供的原始参考资料，你必须:\n"
+                    "1. 以参考资料的核心观点和论据为基础进行撰写\n"
+                    "2. 保留原文的关键数据、结论和专业观点\n"
+                    "3. 可以调整表达方式使其更通俗易懂，但不得偏离原文核心思想\n"
+                    "4. 不要凭空添加原文中没有的观点或数据\n"
+                    f"\n参考资料原文:\n{reference_content}"
+                )
+            user_notes_section = ""
+            if user_notes:
+                user_notes_section = f"\n\n作者要求融入的观点和角度:\n{user_notes}"
+
+            try:
+                user_prompt = prompt_config.user_prompt_template.format(
+                    topic=topic, style=style, language=language,
+                    min_words=min_words, max_words=max_words,
+                    reference_content=reference_section,
+                    user_notes=user_notes_section,
+                )
+            except KeyError as e:
+                logger.warning("Template variable error: %s, falling back to default", e)
+                user_prompt = self._build_article_prompt(topic, style, language, min_words, max_words,
+                                                          reference_content=reference_content, user_notes=user_notes)
+            system_prompt = prompt_config.system_prompt
+            temperature = prompt_config.temperature
+            max_tokens = prompt_config.max_tokens
+        else:
+            user_prompt = self._build_article_prompt(topic, style, language, min_words, max_words,
+                                                      reference_content=reference_content, user_notes=user_notes)
+            system_prompt = self._get_article_system_prompt()
+            temperature = 0.7
+            max_tokens = 4096
         return await self.generate(TextGenerationRequest(
-            prompt=prompt,
-            system_prompt=self._get_article_system_prompt(),
-            temperature=0.7,
+            prompt=user_prompt,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
             language=language,
         ))
 
-    async def generate_script(self, article: str, style: str = "conversational") -> TextGenerationResponse:
+    async def generate_script(self, article: str, style: str = "conversational",
+                               prompt_config=None) -> TextGenerationResponse:
         """Convert article into oral broadcast script."""
-        prompt = self._build_script_prompt(article, style)
+        if prompt_config:
+            try:
+                user_prompt = prompt_config.user_prompt_template.format(
+                    article=article, style=style,
+                )
+            except KeyError as e:
+                logger.warning("Template variable error: %s, falling back to default", e)
+                user_prompt = self._build_script_prompt(article, style)
+            system_prompt = prompt_config.system_prompt
+            temperature = prompt_config.temperature
+            max_tokens = prompt_config.max_tokens
+        else:
+            user_prompt = self._build_script_prompt(article, style)
+            system_prompt = self._get_script_system_prompt()
+            temperature = 0.5
+            max_tokens = 4096
         return await self.generate(TextGenerationRequest(
-            prompt=prompt,
-            system_prompt=self._get_script_system_prompt(),
-            temperature=0.5,
+            prompt=user_prompt,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
         ))
 
     async def generate_segmented_script(self, segments: list[str],
-                                         style: str = "conversational") -> TextGenerationResponse:
+                                         style: str = "conversational",
+                                         prompt_config=None) -> TextGenerationResponse:
         """Generate oral broadcast script with per-segment markers."""
-        prompt = self._build_segmented_script_prompt(segments, style)
+        if prompt_config:
+            n = len(segments)
+            numbered_segments = "\n\n".join(f"[段落{i+1}]:\n{seg}" for i, seg in enumerate(segments))
+            markers = "、".join(f"[SEGMENT_{i+1}]" for i in range(n))
+            try:
+                user_prompt = prompt_config.user_prompt_template.format(
+                    segment_count=n, numbered_segments=numbered_segments,
+                    markers=markers, style=style,
+                )
+            except KeyError as e:
+                logger.warning("Template variable error: %s, falling back to default", e)
+                user_prompt = self._build_segmented_script_prompt(segments, style)
+            system_prompt = prompt_config.system_prompt
+            temperature = prompt_config.temperature
+            max_tokens = prompt_config.max_tokens
+        else:
+            user_prompt = self._build_segmented_script_prompt(segments, style)
+            system_prompt = self._get_script_system_prompt()
+            temperature = 0.5
+            max_tokens = 8192
         return await self.generate(TextGenerationRequest(
-            prompt=prompt,
-            system_prompt=self._get_script_system_prompt(),
-            temperature=0.5,
-            max_tokens=8192,
+            prompt=user_prompt,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
         ))
 
     async def generate_image_prompts(self, segments: list[str],
                                        language: str = "en",
-                                       aspect_ratio: str = "16:9") -> list[str]:
+                                       aspect_ratio: str = "16:9",
+                                       prompt_config=None) -> list[str]:
         """Generate image prompts for each content segment."""
-        prompt = self._build_image_prompt_generation(segments, language, aspect_ratio)
+        if prompt_config:
+            numbered_segments = "\n".join(f"[段落{i+1}]: {seg}" for i, seg in enumerate(segments))
+            if language == "zh":
+                lang_instruction = "使用中文"
+                lang_label = "中文提示词"
+            else:
+                lang_instruction = "使用英文"
+                lang_label = "英文提示词"
+            ratio_hints = {
+                "9:16": "竖版构图(9:16竖屏),画面内容应纵向排列,充分利用上下空间,采用从上到下的视觉动线,避免横向排列元素导致上下留白",
+                "16:9": "横版构图(16:9宽屏),画面内容应横向展开,充分利用左右空间",
+                "1:1": "方形构图(1:1),画面内容应居中均衡分布",
+            }
+            ratio_hint = ratio_hints.get(aspect_ratio, f"画面比例为{aspect_ratio},请根据此比例设计构图")
+            try:
+                user_prompt = prompt_config.user_prompt_template.format(
+                    lang_label=lang_label, numbered_segments=numbered_segments,
+                    lang_instruction=lang_instruction, ratio_hint=ratio_hint,
+                )
+            except KeyError as e:
+                logger.warning("Template variable error: %s, falling back to default", e)
+                user_prompt = self._build_image_prompt_generation(segments, language, aspect_ratio)
+            system_prompt = prompt_config.system_prompt
+            temperature = prompt_config.temperature
+            max_tokens = prompt_config.max_tokens
+        else:
+            user_prompt = self._build_image_prompt_generation(segments, language, aspect_ratio)
+            system_prompt = self._get_image_prompt_system_prompt()
+            temperature = 0.6
+            max_tokens = 8192
         response = await self.generate(TextGenerationRequest(
-            prompt=prompt,
-            system_prompt=self._get_image_prompt_system_prompt(),
-            temperature=0.6,
+            prompt=user_prompt,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
         ))
-        return self._parse_image_prompts(response.content, len(segments))
+        prompts = self._parse_image_prompts(response.content, len(segments))
+        logger.info(
+            "Image prompt generation: expected=%d, parsed=%d",
+            len(segments), len(prompts),
+        )
+        if len(prompts) < len(segments):
+            logger.warning(
+                "Fewer prompts than segments. Raw response (first 500 chars): %s",
+                response.content[:500],
+            )
+        return prompts
 
     def _build_article_prompt(self, topic: str, style: str, language: str,
-                               min_words: int, max_words: int) -> str:
-        return (
+                               min_words: int, max_words: int,
+                               reference_content: str | None = None,
+                               user_notes: str | None = None) -> str:
+        prompt = (
             f"请围绕以下主题撰写一篇健康科普文章:\n"
             f"主题: {topic}\n\n"
             f"要求:\n"
@@ -94,6 +217,19 @@ class TextProvider(BaseProvider):
             f"- 【重要】输出纯文本,不要使用Markdown格式(不要用#标题、**加粗**、- 列表等标记)\n"
             f"- 用空行分隔段落即可,不需要任何格式标记"
         )
+        if reference_content:
+            prompt += (
+                "\n\n【核心参考资料 - 必须严格遵循】\n"
+                "以下是用户提供的原始参考资料，你必须:\n"
+                "1. 以参考资料的核心观点和论据为基础进行撰写\n"
+                "2. 保留原文的关键数据、结论和专业观点\n"
+                "3. 可以调整表达方式使其更通俗易懂，但不得偏离原文核心思想\n"
+                "4. 不要凭空添加原文中没有的观点或数据\n"
+                f"\n参考资料原文:\n{reference_content}"
+            )
+        if user_notes:
+            prompt += f"\n\n作者要求融入的观点和角度:\n{user_notes}"
+        return prompt
 
     def _get_article_system_prompt(self) -> str:
         return (
@@ -208,6 +344,7 @@ class TextProvider(BaseProvider):
             f"- {lang_instruction}\n"
             f"- 风格: 专业医学科普插图,现代扁平风格\n"
             f"- 避免出现人脸特写\n"
+            f"- 如果画面中需要出现文字或标注,请确保文字内容准确无误,使用简体中文\n"
             f"- 【重要】构图要求: {ratio_hint}\n"
             f"- 每个提示词中必须明确描述画面元素的空间布局方向\n"
             f"- 用 [PROMPT_1], [PROMPT_2]... 标记每个提示词"
@@ -229,19 +366,36 @@ class TextProvider(BaseProvider):
     # --- Publish copy (multi-platform titles, descriptions, tags) ---
 
     async def generate_publish_copy(self, title: str, article: str,
-                                      topic: str) -> dict[str, dict]:
+                                      topic: str, prompt_config=None) -> dict[str, dict]:
         """Generate viral titles, descriptions and tags for 5 platforms."""
-        prompt = self._build_publish_copy_prompt(title, article, topic)
+        if prompt_config:
+            article_excerpt = article[:2000] if len(article) > 2000 else article
+            try:
+                user_prompt = prompt_config.user_prompt_template.format(
+                    topic=topic, title=title, article_excerpt=article_excerpt,
+                )
+            except KeyError as e:
+                logger.warning("Template variable error: %s, falling back to default", e)
+                user_prompt = self._build_publish_copy_prompt(title, article, topic)
+            system_prompt = prompt_config.system_prompt
+            temperature = prompt_config.temperature
+            max_tokens = prompt_config.max_tokens
+        else:
+            user_prompt = self._build_publish_copy_prompt(title, article, topic)
+            system_prompt = self._get_publish_copy_system_prompt()
+            temperature = 0.7
+            max_tokens = 4096
         response = await self.generate(TextGenerationRequest(
-            prompt=prompt,
-            system_prompt=self._get_publish_copy_system_prompt(),
-            temperature=0.7,
-            max_tokens=4096,
+            prompt=user_prompt,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
         ))
         return self._parse_publish_copy(response.content)
 
     async def generate_cover_prompt(self, topic: str, title: str,
-                                      aspect_ratio: str = "3:4") -> str:
+                                      aspect_ratio: str = "3:4",
+                                      prompt_config=None) -> str:
         """Generate an image prompt for a video cover."""
         ratio_hints = {
             "3:4": "竖版构图(3:4),主体居中偏上,下方留空",
@@ -249,24 +403,50 @@ class TextProvider(BaseProvider):
         }
         ratio_hint = ratio_hints.get(aspect_ratio, f"画面比例{aspect_ratio}")
 
-        prompt = (
-            f"请为以下健康科普短视频生成一个封面背景图的AI绘图提示词:\n\n"
-            f"视频主题: {topic}\n"
-            f"视频标题: {title}\n\n"
-            f"要求:\n"
-            f"- 使用英文提示词\n"
-            f"- 画面明亮、专业、现代感强\n"
-            f"- 适合健康/医学科普类视频封面\n"
-            f"- 色彩鲜明,视觉冲击力强\n"
-            f"- 不包含任何文字\n"
-            f"- {ratio_hint}\n"
-            f"- 避免出现人脸特写\n"
-            f"- 只输出提示词本身,不要任何额外说明"
-        )
+        if prompt_config:
+            try:
+                user_prompt = prompt_config.user_prompt_template.format(
+                    topic=topic, title=title, ratio_hint=ratio_hint,
+                )
+            except KeyError as e:
+                logger.warning("Template variable error: %s, falling back to default", e)
+                user_prompt = (
+                    f"请为以下健康科普短视频生成一个封面背景图的AI绘图提示词:\n\n"
+                    f"视频主题: {topic}\n"
+                    f"视频标题: {title}\n\n"
+                    f"要求:\n"
+                    f"- 使用英文提示词\n"
+                    f"- 画面明亮、专业、现代感强\n"
+                    f"- 适合健康/医学科普类视频封面\n"
+                    f"- 色彩鲜明,视觉冲击力强\n"
+                    f"- 不包含任何文字\n"
+                    f"- {ratio_hint}\n"
+                    f"- 避免出现人脸特写\n"
+                    f"- 只输出提示词本身,不要任何额外说明"
+                )
+            system_prompt = prompt_config.system_prompt
+            temperature = prompt_config.temperature
+        else:
+            user_prompt = (
+                f"请为以下健康科普短视频生成一个封面背景图的AI绘图提示词:\n\n"
+                f"视频主题: {topic}\n"
+                f"视频标题: {title}\n\n"
+                f"要求:\n"
+                f"- 使用英文提示词\n"
+                f"- 画面明亮、专业、现代感强\n"
+                f"- 适合健康/医学科普类视频封面\n"
+                f"- 色彩鲜明,视觉冲击力强\n"
+                f"- 不包含任何文字\n"
+                f"- {ratio_hint}\n"
+                f"- 避免出现人脸特写\n"
+                f"- 只输出提示词本身,不要任何额外说明"
+            )
+            system_prompt = "你是一位AI绘画提示词专家,擅长设计短视频封面。只输出英文提示词。"
+            temperature = 0.6
         response = await self.generate(TextGenerationRequest(
-            prompt=prompt,
-            system_prompt="你是一位AI绘画提示词专家,擅长设计短视频封面。只输出英文提示词。",
-            temperature=0.6,
+            prompt=user_prompt,
+            system_prompt=system_prompt,
+            temperature=temperature,
         ))
         return response.content.strip()
 

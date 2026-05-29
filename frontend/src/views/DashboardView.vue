@@ -11,12 +11,16 @@ const router = useRouter()
 const recentProjects = ref<Project[]>([])
 const loading = ref(false)
 const createDialogVisible = ref(false)
-const createMode = ref<'manual' | 'url'>('manual')
-const newProject = ref({ title: '', topic: '', aspect_ratio: '16:9', video_template: 'slideshow', image_prompt_language: 'zh' })
+const createMode = ref<'manual' | 'url' | 'pdf'>('manual')
+const newProject = ref({ title: '', topic: '', aspect_ratio: '16:9', video_template: 'slideshow', image_prompt_language: 'zh', reference_content: '', source_type: 'manual', source_url: '' })
 
 // URL import
 const importUrl = ref('')
 const extracting = ref(false)
+
+// PDF import
+const pdfFile = ref<File | null>(null)
+const pdfExtracting = ref(false)
 
 onMounted(async () => {
   await loadProjects()
@@ -42,7 +46,7 @@ async function handleCreate() {
   try {
     const { data } = await projectsApi.create(newProject.value)
     createDialogVisible.value = false
-    newProject.value = { title: '', topic: '', aspect_ratio: '16:9', video_template: 'slideshow', image_prompt_language: 'zh' }
+    newProject.value = { title: '', topic: '', aspect_ratio: '16:9', video_template: 'slideshow', image_prompt_language: 'zh', reference_content: '', source_type: 'manual', source_url: '' }
     router.push(`/projects/${data.id}`)
   } catch {
     ElMessage.error('创建失败')
@@ -58,13 +62,42 @@ async function handleExtractUrl() {
   try {
     const { data } = await sourcesApi.extractUrl(importUrl.value)
     newProject.value.title = data.title || ''
-    newProject.value.topic = data.content.substring(0, 500)
+    newProject.value.topic = data.title || ''
+    newProject.value.reference_content = data.content
+    newProject.value.source_type = 'url'
+    newProject.value.source_url = importUrl.value
     createMode.value = 'manual'
     ElMessage.success('内容提取成功，请检查并创建项目')
   } catch {
     ElMessage.error('内容提取失败，请检查 URL')
   } finally {
     extracting.value = false
+  }
+}
+
+function handlePdfChange(file: any) {
+  pdfFile.value = file.raw
+}
+
+async function handleExtractPdf() {
+  if (!pdfFile.value) {
+    ElMessage.warning('请选择 PDF 文件')
+    return
+  }
+  pdfExtracting.value = true
+  try {
+    const { data } = await sourcesApi.extractPdf(pdfFile.value)
+    newProject.value.title = data.title || ''
+    newProject.value.topic = data.title || ''
+    newProject.value.reference_content = data.content
+    newProject.value.source_type = 'pdf'
+    newProject.value.source_url = ''
+    createMode.value = 'manual'
+    ElMessage.success('PDF 内容提取成功，请检查并创建项目')
+  } catch {
+    ElMessage.error('PDF 内容提取失败，请确认文件格式正确')
+  } finally {
+    pdfExtracting.value = false
   }
 }
 
@@ -141,6 +174,7 @@ function getStatusLabel(status: string) {
       <el-tabs v-model="createMode">
         <el-tab-pane label="手动输入" name="manual" />
         <el-tab-pane label="从 URL 导入" name="url" />
+        <el-tab-pane label="PDF 论文导入" name="pdf" />
       </el-tabs>
 
       <!-- URL 导入 -->
@@ -159,12 +193,48 @@ function getStatusLabel(status: string) {
         </el-text>
       </div>
 
+      <!-- PDF 导入 -->
+      <div v-if="createMode === 'pdf'" style="margin-bottom: 16px;">
+        <el-upload
+          :auto-upload="false"
+          accept=".pdf"
+          :limit="1"
+          :on-change="handlePdfChange"
+          :on-exceed="() => ElMessage.warning('只能上传一个 PDF 文件')"
+          drag
+        >
+          <el-icon style="font-size: 40px; color: #909399;"><UploadFilled /></el-icon>
+          <div style="margin-top: 8px;">将 PDF 文件拖到此处，或<em>点击上传</em></div>
+        </el-upload>
+        <el-button
+          type="primary"
+          :loading="pdfExtracting"
+          :disabled="!pdfFile"
+          style="margin-top: 12px; width: 100%;"
+          @click="handleExtractPdf"
+        >提取论文内容</el-button>
+        <el-text type="info" size="small" style="display: block; margin-top: 4px;">
+          上传学术论文 PDF，自动提取标题和正文作为话题和参考资料
+        </el-text>
+      </div>
+
       <el-form label-width="80px">
         <el-form-item label="标题">
           <el-input v-model="newProject.title" placeholder="输入项目标题" />
         </el-form-item>
         <el-form-item label="话题">
           <el-input v-model="newProject.topic" type="textarea" :rows="3" placeholder="输入健康科普话题" />
+        </el-form-item>
+        <el-form-item v-if="newProject.reference_content" label="参考资料">
+          <el-input
+            v-model="newProject.reference_content"
+            type="textarea"
+            :rows="6"
+            placeholder="从 URL/PDF 提取的参考资料内容"
+          />
+          <el-text type="info" size="small" style="display: block; margin-top: 4px;">
+            AI 生成文章时将严格参考以上内容的核心观点
+          </el-text>
         </el-form-item>
         <el-form-item label="画面比例">
           <el-radio-group v-model="newProject.aspect_ratio">

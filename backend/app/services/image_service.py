@@ -47,6 +47,7 @@ class ImageService:
                     db, segments, text_config, settings,
                     language=image_prompt_language,
                     aspect_ratio=project.aspect_ratio,
+                    project_metadata_json=project.metadata_json,
                 )
 
             # Get image provider
@@ -175,6 +176,7 @@ class ImageService:
                 db, segments, text_config, settings,
                 language=image_prompt_language,
                 aspect_ratio=project.aspect_ratio,
+                project_metadata_json=project.metadata_json,
             )
             await db.commit()
 
@@ -304,7 +306,8 @@ class ImageService:
 
     async def _generate_image_prompts(self, db, segments, text_config, settings,
                                         language: str = "en",
-                                        aspect_ratio: str = "16:9"):
+                                        aspect_ratio: str = "16:9",
+                                        project_metadata_json: str | None = None):
         """Use text provider to generate image prompts for segments."""
         api_key = text_config.api_key
         if not api_key:
@@ -324,9 +327,14 @@ class ImageService:
             config=extra_config,
         )
 
+        # Resolve prompt config
+        from ..services.prompt_template_service import PromptTemplateService
+        prompt_config = await PromptTemplateService.resolve(db, "image_prompt_generation", project_metadata_json)
+
         segment_texts = [s.content for s in segments]
         prompts = await text_provider.generate_image_prompts(
             segment_texts, language=language, aspect_ratio=aspect_ratio,
+            prompt_config=prompt_config,
         )
 
         for segment, prompt in zip(segments, prompts):

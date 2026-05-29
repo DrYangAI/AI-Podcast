@@ -32,8 +32,32 @@ class ProjectCreate(BaseModel):
     portrait_video_y: int = Field(default=480)
     portrait_subtitle_font_size: int = Field(default=38)
     portrait_subtitle_margin_v: int = Field(default=550)
+    portrait_title_color: str = Field(default="#FFFFFF")
+    portrait_title_outline_color: str = Field(default="#000000")
+    portrait_title_outline_width: int = Field(default=2)
+    portrait_title_shadow_enabled: bool = Field(default=True)
+    portrait_title_shadow_color: str = Field(default="#000000")
+    portrait_title_shadow_opacity: float = Field(default=0.5)
+    portrait_title_shadow_x: int = Field(default=2)
+    portrait_title_shadow_y: int = Field(default=2)
+    portrait_sub_title_text: str | None = None
+    portrait_sub_title_font_size: int = Field(default=24)
+    portrait_sub_title_color: str = Field(default="#CCCCCC")
+    portrait_sub_title_y: int = Field(default=130)
+    portrait_title_bg_enabled: bool = Field(default=False)
+    portrait_title_bg_color: str = Field(default="#000000")
+    portrait_title_bg_opacity: float = Field(default=0.5)
+    portrait_title_bg_padding: int = Field(default=20)
+    portrait_title_bg_shape: str = Field(default="rect")
+    portrait_title_bg_radius: int = Field(default=16)
+    portrait_title_bg_skew: int = Field(default=10)
     tts_voice_id: str | None = None
     tts_voice_clone_id: str | None = None
+    intro_text: str | None = None
+    outro_text: str | None = None
+    reference_content: str | None = None
+    use_reference_content: bool = Field(default=True)
+    user_notes: str | None = None
 
 
 class ProjectUpdate(BaseModel):
@@ -62,8 +86,32 @@ class ProjectUpdate(BaseModel):
     portrait_video_y: int | None = None
     portrait_subtitle_font_size: int | None = None
     portrait_subtitle_margin_v: int | None = None
+    portrait_title_color: str | None = None
+    portrait_title_outline_color: str | None = None
+    portrait_title_outline_width: int | None = None
+    portrait_title_shadow_enabled: bool | None = None
+    portrait_title_shadow_color: str | None = None
+    portrait_title_shadow_opacity: float | None = None
+    portrait_title_shadow_x: int | None = None
+    portrait_title_shadow_y: int | None = None
+    portrait_sub_title_text: str | None = None
+    portrait_sub_title_font_size: int | None = None
+    portrait_sub_title_color: str | None = None
+    portrait_sub_title_y: int | None = None
+    portrait_title_bg_enabled: bool | None = None
+    portrait_title_bg_color: str | None = None
+    portrait_title_bg_opacity: float | None = None
+    portrait_title_bg_padding: int | None = None
+    portrait_title_bg_shape: str | None = None
+    portrait_title_bg_radius: int | None = None
+    portrait_title_bg_skew: int | None = None
     tts_voice_id: str | None = None
     tts_voice_clone_id: str | None = None
+    intro_text: str | None = None
+    outro_text: str | None = None
+    reference_content: str | None = None
+    use_reference_content: bool | None = None
+    user_notes: str | None = None
 
 
 class ProjectResponse(BaseModel):
@@ -95,8 +143,32 @@ class ProjectResponse(BaseModel):
     portrait_video_y: int = 480
     portrait_subtitle_font_size: int = 38
     portrait_subtitle_margin_v: int = 550
+    portrait_title_color: str = "#FFFFFF"
+    portrait_title_outline_color: str = "#000000"
+    portrait_title_outline_width: int = 2
+    portrait_title_shadow_enabled: bool = True
+    portrait_title_shadow_color: str = "#000000"
+    portrait_title_shadow_opacity: float = 0.5
+    portrait_title_shadow_x: int = 2
+    portrait_title_shadow_y: int = 2
+    portrait_sub_title_text: str | None = None
+    portrait_sub_title_font_size: int = 24
+    portrait_sub_title_color: str = "#CCCCCC"
+    portrait_sub_title_y: int = 130
+    portrait_title_bg_enabled: bool = False
+    portrait_title_bg_color: str = "#000000"
+    portrait_title_bg_opacity: float = 0.5
+    portrait_title_bg_padding: int = 20
+    portrait_title_bg_shape: str = "rect"
+    portrait_title_bg_radius: int = 16
+    portrait_title_bg_skew: int = 10
     tts_voice_id: str | None = None
     tts_voice_clone_id: str | None = None
+    intro_text: str | None = None
+    outro_text: str | None = None
+    reference_content: str | None = None
+    use_reference_content: bool = True
+    user_notes: str | None = None
     status: str
     created_at: datetime
     updated_at: datetime
@@ -148,6 +220,7 @@ class SegmentResponse(BaseModel):
     content: str
     image_prompt: str | None
     duration_hint: float | None
+    chapter_title: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -155,6 +228,7 @@ class SegmentResponse(BaseModel):
 class SegmentUpdate(BaseModel):
     content: str | None = None
     image_prompt: str | None = None
+    chapter_title: str | None = None
 
 
 class ImageAssetResponse(BaseModel):

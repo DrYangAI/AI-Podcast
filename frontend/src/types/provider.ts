@@ -3,6 +3,7 @@ export interface ProviderConfig {
   name: string
   provider_type: string
   provider_key: string
+  api_key_masked: string | null
   api_base_url: string | null
   model_id: string | null
   config: Record<string, any> | null

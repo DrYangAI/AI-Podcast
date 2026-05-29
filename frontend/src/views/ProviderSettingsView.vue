@@ -11,6 +11,7 @@ const dialogVisible = ref(false)
 const dialogMode = ref<'add' | 'edit'>('add')
 const editingId = ref<string | null>(null)
 const testing = ref<string | null>(null)
+const editingMaskedKey = ref<string>('')
 
 const form = ref({
   name: '',
@@ -45,6 +46,13 @@ const filteredTypes = computed(() =>
   availableTypes.value.filter(t => t.provider_type === form.value.provider_type)
 )
 
+const selectedProviderModels = computed(() => {
+  const key = form.value.provider_key
+  if (!key) return []
+  const info = availableTypes.value.find(t => t.key === key)
+  return info?.supported_models || []
+})
+
 function openAdd() {
   form.value = { name: '', provider_type: 'text', provider_key: '', api_key: '', api_base_url: '', model_id: '', is_default: false, config: {} }
   dialogMode.value = 'add'
@@ -65,6 +73,7 @@ function openEdit(row: ProviderConfig) {
   }
   dialogMode.value = 'edit'
   editingId.value = row.id
+  editingMaskedKey.value = row.api_key_masked || ''
   dialogVisible.value = true
 }
 
@@ -146,6 +155,11 @@ function getTypeLabel(t: string) {
         <template #default="{ row }">{{ getTypeLabel(row.provider_type) }}</template>
       </el-table-column>
       <el-table-column prop="provider_key" label="提供商" width="120" />
+      <el-table-column label="API Key" width="160">
+        <template #default="{ row }">
+          <span style="font-family: monospace; color: #909399;">{{ row.api_key_masked || '未配置' }}</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="model_id" label="模型" width="180" />
       <el-table-column label="默认" width="70">
         <template #default="{ row }">
@@ -195,13 +209,16 @@ function getTypeLabel(t: string) {
         </template>
         <el-form-item label="API Key">
           <el-input v-model="form.api_key" type="password" show-password
-            :placeholder="dialogMode === 'edit' ? '已保存 (留空则保持不变)' : '输入 API Key'" />
+            :placeholder="dialogMode === 'edit' ? `已保存: ${editingMaskedKey || '***'} (留空则保持不变)` : '输入 API Key'" />
         </el-form-item>
         <el-form-item label="API 地址">
           <el-input v-model="form.api_base_url" placeholder="自定义 API 地址 (可选)" />
         </el-form-item>
-        <el-form-item label="模型 ID">
-          <el-input v-model="form.model_id" placeholder="如: claude-sonnet-4-20250514" />
+        <el-form-item label="模型">
+          <el-select v-model="form.model_id" filterable allow-create clearable
+            :placeholder="selectedProviderModels.length ? '选择模型' : '输入模型 ID'">
+            <el-option v-for="m in selectedProviderModels" :key="m" :label="m" :value="m" />
+          </el-select>
         </el-form-item>
         <el-form-item label="endpoint_id" v-if="form.provider_key === 'doubao_seedream'">
           <el-input v-model="form.config.endpoint_id" placeholder="推理接入点 ID (可选)" />
