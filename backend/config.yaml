@@ -84,6 +84,12 @@ tts:
   icl_max_chars: 300
   standard_max_chars: 2000
 
+ppt:
+  # Optional explicit path to the LibreOffice `soffice` binary used to render
+  # PPT slides to images. Leave empty to auto-detect (PATH, then the standard
+  # macOS app bundle at /Applications/LibreOffice.app/Contents/MacOS/soffice).
+  soffice_path: ""
+
 tasks:
   max_concurrent: 3
   retry_attempts: 2

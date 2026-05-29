@@ -11,7 +11,7 @@ const router = useRouter()
 const recentProjects = ref<Project[]>([])
 const loading = ref(false)
 const createDialogVisible = ref(false)
-const createMode = ref<'manual' | 'url' | 'pdf'>('manual')
+const createMode = ref<'manual' | 'url' | 'pdf' | 'ppt'>('manual')
 const newProject = ref({ title: '', topic: '', aspect_ratio: '16:9', video_template: 'slideshow', image_prompt_language: 'zh', reference_content: '', source_type: 'manual', source_url: '' })
 
 // URL import
@@ -21,6 +21,10 @@ const extracting = ref(false)
 // PDF import
 const pdfFile = ref<File | null>(null)
 const pdfExtracting = ref(false)
+
+// PPT import
+const pptFile = ref<File | null>(null)
+const pptImporting = ref(false)
 
 onMounted(async () => {
   await loadProjects()
@@ -101,6 +105,41 @@ async function handleExtractPdf() {
   }
 }
 
+function handlePptChange(file: any) {
+  pptFile.value = file.raw
+  // Pre-fill the title from the filename if the user hasn't typed one.
+  if (!newProject.value.title && file.name) {
+    newProject.value.title = file.name.replace(/\.(pptx?|PPTX?)$/, '')
+  }
+}
+
+async function handlePptImport() {
+  if (!pptFile.value) {
+    ElMessage.warning('请选择 PPT 文件')
+    return
+  }
+  if (!newProject.value.title) {
+    ElMessage.warning('请填写标题')
+    return
+  }
+  pptImporting.value = true
+  try {
+    const { data } = await projectsApi.importPpt(pptFile.value, {
+      title: newProject.value.title,
+      aspect_ratio: newProject.value.aspect_ratio,
+      video_template: newProject.value.video_template,
+    })
+    createDialogVisible.value = false
+    pptFile.value = null
+    ElMessage.success('PPT 导入中：幻灯片转为画面、备注转为口播稿，稍候即可生成音频和视频')
+    router.push(`/projects/${data.id}`)
+  } catch {
+    ElMessage.error('PPT 导入失败，请确认文件格式正确并已安装 LibreOffice')
+  } finally {
+    pptImporting.value = false
+  }
+}
+
 function getStatusType(status: string) {
   const map: Record<string, string> = {
     draft: 'info', processing: 'warning', completed: 'success', failed: 'danger',
@@ -175,7 +214,27 @@ function getStatusLabel(status: string) {
         <el-tab-pane label="手动输入" name="manual" />
         <el-tab-pane label="从 URL 导入" name="url" />
         <el-tab-pane label="PDF 论文导入" name="pdf" />
+        <el-tab-pane label="从 PPT 导入" name="ppt" />
       </el-tabs>
+
+      <!-- PPT 导入 -->
+      <div v-if="createMode === 'ppt'" style="margin-bottom: 16px;">
+        <el-upload
+          :auto-upload="false"
+          accept=".pptx,.ppt"
+          :limit="1"
+          :on-change="handlePptChange"
+          :on-exceed="() => ElMessage.warning('只能上传一个 PPT 文件')"
+          drag
+        >
+          <el-icon style="font-size: 40px; color: #909399;"><UploadFilled /></el-icon>
+          <div style="margin-top: 8px;">将 PPT 文件拖到此处，或<em>点击上传</em></div>
+        </el-upload>
+        <el-text type="info" size="small" style="display: block; margin-top: 4px;">
+          每页幻灯片作为一段画面，对应的备注作为该段口播稿（建议 .pptx，备注更可靠）。
+          导入后可直接生成音频与视频。
+        </el-text>
+      </div>
 
       <!-- URL 导入 -->
       <div v-if="createMode === 'url'" style="margin-bottom: 16px;">
@@ -222,7 +281,7 @@ function getStatusLabel(status: string) {
         <el-form-item label="标题">
           <el-input v-model="newProject.title" placeholder="输入项目标题" />
         </el-form-item>
-        <el-form-item label="话题">
+        <el-form-item v-if="createMode !== 'ppt'" label="话题">
           <el-input v-model="newProject.topic" type="textarea" :rows="3" placeholder="输入健康科普话题" />
         </el-form-item>
         <el-form-item v-if="newProject.reference_content" label="参考资料">
@@ -249,7 +308,7 @@ function getStatusLabel(status: string) {
             <el-option label="Ken Burns" value="kenburns" />
           </el-select>
         </el-form-item>
-        <el-form-item label="图片文字">
+        <el-form-item v-if="createMode !== 'ppt'" label="图片文字">
           <el-radio-group v-model="newProject.image_prompt_language">
             <el-radio-button value="zh">中文</el-radio-button>
             <el-radio-button value="en">英文</el-radio-button>
@@ -258,7 +317,13 @@ function getStatusLabel(status: string) {
       </el-form>
       <template #footer>
         <el-button @click="createDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleCreate">创建</el-button>
+        <el-button
+          v-if="createMode === 'ppt'"
+          type="primary"
+          :loading="pptImporting"
+          @click="handlePptImport"
+        >导入并创建</el-button>
+        <el-button v-else type="primary" @click="handleCreate">创建</el-button>
       </template>
     </el-dialog>
   </div>

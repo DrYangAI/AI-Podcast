@@ -145,8 +145,13 @@ class VideoService:
             if not audio or audio.status != "completed":
                 raise ValueError("No completed audio found")
 
-            # Check if segments have per-segment script_text and actual durations
-            has_segment_scripts = all(seg.script_text for seg in segments)
+            # Check if segments have per-segment script_text and actual durations.
+            # PPT-imported projects keep the per-segment path even when some slides
+            # have empty notes (blank subtitle + silent still-frame).
+            is_ppt = getattr(project, "source_type", "") == "ppt"
+            has_segment_scripts = bool(segments) and (
+                is_ppt or all(seg.script_text for seg in segments)
+            )
             has_segment_durations = all(
                 seg.duration_hint and seg.duration_hint > 0 for seg in segments
             )
@@ -175,7 +180,7 @@ class VideoService:
                     image_paths.append(Path(img.file_path))
                     # Priority: segment.script_text > script_paragraphs > segment.content
                     if has_segment_scripts:
-                        segment_texts.append(segment.script_text)
+                        segment_texts.append(segment.script_text or "")
                     elif script_paragraphs and i < len(script_paragraphs):
                         segment_texts.append(script_paragraphs[i])
                     else:

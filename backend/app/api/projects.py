@@ -1,17 +1,18 @@
 """Project CRUD API routes."""
 
 import json
+import logging
 import uuid
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile, File, Form
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ..config import get_settings
-from ..database import get_db
+from ..database import get_db, async_session_factory
 from ..models import Project, PipelineStep, Article, Segment, ImageAsset, Script, AudioAsset, VideoOutput, PublishAsset
 from ..schemas.project import (
     ProjectCreate, ProjectUpdate, ProjectResponse, ProjectDetailResponse,
@@ -28,6 +29,8 @@ from ..schemas.prompt_template import (
     ProjectPromptOverride,
     ResolvedPromptConfig as ResolvedPromptConfigSchema,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -61,9 +64,8 @@ async def list_projects(
     )
 
 
-@router.post("", response_model=ProjectResponse, status_code=201)
-async def create_project(data: ProjectCreate, db: AsyncSession = Depends(get_db)):
-    """Create a new project and initialize pipeline steps."""
+async def _create_project_and_steps(data: ProjectCreate, db: AsyncSession) -> Project:
+    """Create a Project row and seed its pipeline steps. Caller commits/flushes."""
     # Load global portrait defaults for new projects
     from ..models.global_setting import GlobalSetting
     gresult = await db.execute(
@@ -116,7 +118,87 @@ async def create_project(data: ProjectCreate, db: AsyncSession = Depends(get_db)
         db.add(step)
 
     await db.flush()
+    return project
+
+
+@router.post("", response_model=ProjectResponse, status_code=201)
+async def create_project(data: ProjectCreate, db: AsyncSession = Depends(get_db)):
+    """Create a new project and initialize pipeline steps."""
+    project = await _create_project_and_steps(data, db)
     return ProjectResponse.model_validate(project)
+
+
+@router.post("/import-ppt", response_model=ProjectResponse, status_code=201)
+async def import_ppt_project(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    title: str = Form(...),
+    aspect_ratio: str = Form("16:9"),
+    video_template: str = Form("slideshow"),
+    subtitle_enabled: bool = Form(True),
+    tts_voice_id: str | None = Form(None),
+    tts_voice_clone_id: str | None = Form(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a project from a PPT: slides → images, speaker notes → narration.
+
+    Renders slides with LibreOffice (slow), so the import runs as a background
+    task; the project is returned immediately with status "processing". When the
+    import finishes the first four pipeline steps are marked completed and the
+    user can run the pipeline from `tts_audio`.
+    """
+    name = (file.filename or "").lower()
+    if not (name.endswith(".pptx") or name.endswith(".ppt")):
+        raise HTTPException(status_code=400, detail="请上传 .pptx 或 .ppt 文件")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="上传的文件为空")
+    if len(content) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="文件过大（上限 50MB）")
+
+    data = ProjectCreate(
+        title=title,
+        topic=title,
+        source_type="ppt",
+        aspect_ratio=aspect_ratio,
+        video_template=video_template,
+        subtitle_enabled=subtitle_enabled,
+        tts_voice_id=tts_voice_id or None,
+        tts_voice_clone_id=tts_voice_clone_id or None,
+    )
+    project = await _create_project_and_steps(data, db)
+    project.status = "processing"
+    # Commit so the background import (which uses its own session) sees the
+    # project, then refresh to reload server-generated columns (created_at/
+    # updated_at) that the commit expires — otherwise model_validate below would
+    # trigger a lazy load on the async session and raise MissingGreenlet.
+    await db.commit()
+    await db.refresh(project)
+    project_id = project.id
+    response = ProjectResponse.model_validate(project)
+
+    async def _run_import():
+        from ..services.ppt_import_service import PPTImportService
+        service = PPTImportService()
+        try:
+            await service.import_ppt(project_id, content, file.filename or "presentation.pptx")
+        except Exception as e:
+            logger.error("PPT import failed for %s: %s", project_id, e, exc_info=True)
+            # Surface the failure on the pipeline steps so the user sees why,
+            # instead of being left with a silent, empty project.
+            try:
+                await service._set_prefilled_steps(project_id, "failed", error_message=f"PPT 导入失败：{e}")
+            except Exception:
+                logger.exception("Failed to mark PPT steps failed for %s", project_id)
+            async with async_session_factory() as db2:
+                proj = await db2.get(Project, project_id)
+                if proj:
+                    proj.status = "failed"
+                    await db2.commit()
+
+    background_tasks.add_task(_run_import)
+    return response
 
 
 @router.get("/{project_id}", response_model=ProjectDetailResponse)

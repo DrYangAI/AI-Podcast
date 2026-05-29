@@ -63,10 +63,20 @@ class PipelineService:
                 project.status = "processing"
                 await db.commit()
 
+            # PPT-imported projects already have article/segments/images/scripts;
+            # never re-run those steps (a "run all" would otherwise wipe the import).
+            is_ppt = bool(project and getattr(project, "source_type", "") == "ppt")
+            ppt_prefilled = {
+                "article_generation", "content_splitting",
+                "image_generation", "script_generation",
+            }
+
             for step in steps:
                 if step.step_order < start_order:
                     continue
                 if step.step_name == "topic_input":
+                    continue
+                if is_ppt and step.step_name in ppt_prefilled:
                     continue
 
                 # 竖屏合成步骤：检查是否启用

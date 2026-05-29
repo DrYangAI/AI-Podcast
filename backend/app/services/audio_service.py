@@ -1,5 +1,6 @@
 """Audio service - TTS generation and manual upload handling."""
 
+import asyncio
 import json
 import logging
 import re
@@ -13,8 +14,28 @@ from ..providers.base import ProviderType
 from ..providers.registry import ProviderRegistry
 from ..providers.tts.base import TTSProvider
 from ..config import get_settings
+from ..utils.ppt_importer import DEFAULT_SILENT_SLIDE_SECONDS
 
 logger = logging.getLogger(__name__)
+
+
+async def _generate_silence(output_path: Path, seconds: float, sample_rate: int = 24000) -> None:
+    """Write a silent MP3 of the given length (for slides with no speaker notes)."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "lavfi",
+        "-i", f"anullsrc=channel_layout=mono:sample_rate={sample_rate}",
+        "-t", f"{max(seconds, 0.1):.3f}",
+        "-c:a", "libmp3lame", "-q:a", "9",
+        str(output_path),
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg silence generation failed: {stderr.decode(errors='replace')[-300:]}")
 
 
 def clean_script_for_tts(text: str) -> str:
@@ -61,6 +82,12 @@ class AudioService:
             result = await db.execute(select(Script).where(Script.project_id == project_id))
             script = result.scalar_one_or_none()
             if not script:
+                proj = await db.get(Project, project_id)
+                if proj and getattr(proj, "source_type", "") == "ppt":
+                    raise ValueError(
+                        "PPT 导入尚未完成（或导入失败）。请等待流水线前面的步骤全部变为“已完成”"
+                        "后再生成语音；大文件渲染可能需要 1–2 分钟。"
+                    )
                 raise ValueError(f"No script found for project {project_id}")
 
             # Get TTS provider
@@ -142,7 +169,12 @@ class AudioService:
                 .order_by(Segment.segment_order)
             )
             segments = list(seg_result.scalars().all())
-            has_segment_scripts = segments and all(seg.script_text for seg in segments)
+            # PPT-imported projects use the per-segment path even when some slides
+            # have empty notes (those become silent still-frames below).
+            is_ppt = bool(project and getattr(project, "source_type", "") == "ppt")
+            has_segment_scripts = bool(segments) and (
+                is_ppt or all(seg.script_text for seg in segments)
+            )
 
             if has_segment_scripts:
                 # === New path: per-segment TTS synthesis ===
@@ -174,14 +206,23 @@ class AudioService:
                         logger.info("Intro done: %.1fs", intro_duration)
 
                 for seg in segments:
-                    seg_text = clean_script_for_tts(seg.script_text)
-                    if not seg_text.strip():
-                        logger.warning("Segment %d has empty script_text, skipping", seg.segment_order)
-                        continue
-
+                    seg_text = clean_script_for_tts(seg.script_text or "")
                     seg_dir = output_dir / "segments" / f"seg_{seg.segment_order:03d}"
                     seg_dir.mkdir(parents=True, exist_ok=True)
                     seg_output = seg_dir / "speech.mp3"
+
+                    if not seg_text.strip():
+                        # Slide with no speaker notes: emit a silent still-frame
+                        # clip so the segment keeps its place in the timeline.
+                        silent_seconds = seg.duration_hint or DEFAULT_SILENT_SLIDE_SECONDS
+                        await _generate_silence(seg_output, silent_seconds)
+                        seg.audio_file = str(seg_output)
+                        seg.duration_hint = silent_seconds
+                        total_duration += silent_seconds
+                        segment_audio_paths.append(seg_output)
+                        logger.info("Segment %d empty note: %.1fs silence",
+                                    seg.segment_order, silent_seconds)
+                        continue
 
                     logger.info("Synthesizing segment %d: %d chars", seg.segment_order, len(seg_text))
                     seg_response = await tts_provider.synthesize_script(
@@ -261,14 +302,15 @@ class AudioService:
                     })
                     chunk_idx += 1
 
-                active_segments = [s for s in segments if s.script_text and s.script_text.strip()]
+                # Include every segment that produced audio (silent slides too).
+                active_segments = [s for s in segments if s.audio_file]
                 for seg in active_segments:
                     chunk_file = f"chunk_{chunk_idx:03d}.mp3"
                     seg_audio = Path(seg.audio_file) if seg.audio_file else None
                     if seg_audio and seg_audio.exists():
                         import shutil as _shutil
                         _shutil.copy2(seg_audio, chunks_dir / chunk_file)
-                    seg_clean = clean_script_for_tts(seg.script_text)
+                    seg_clean = clean_script_for_tts(seg.script_text or "")
                     chunk_entries.append({
                         "index": chunk_idx,
                         "text": seg_clean,
