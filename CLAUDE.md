@@ -6,6 +6,45 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 AI Podcast - Health Science Video Generator. A system that converts health articles into oral broadcast videos using a 7-step pipeline.
 
+This is currently a solo, local-first project (single developer, runs on the
+owner's machine) with a possible future deployment. Optimize for that reality:
+prefer simple, low-ceremony solutions over multi-user / production hardening
+unless a change is explicitly about preparing for deployment.
+
+## Development Workflow
+
+Default to **feature branches + small, frequent commits**, with one focused
+session per feature. This prevents the "large entangled working tree" problem.
+
+Decision rule:
+- **Trivial change** (typo, style, docs, one-line config) → commit directly on
+  `main`, immediately. No branch needed.
+- **A real feature / multi-file change / needs iterative testing / could break
+  things** → work on a feature branch (e.g. `feat/voice-clone-ui`), test, then
+  merge to `main`.
+- **Experimental / possibly-throwaway work** → always branch, so `main` stays clean.
+
+Per-feature loop:
+```bash
+git checkout main && git pull
+git checkout -b feat/<name>
+# ... develop, committing in small steps (use `git add -p`, avoid hoarding WIP) ...
+git checkout main
+git merge --no-ff feat/<name>
+git push origin main
+git branch -d feat/<name>
+```
+
+Notes:
+- Solo project → no PRs needed; just `git push origin main`. Revisit PR/CI when
+  collaborators or a production deploy arrive.
+- If asked to start a feature, ask which branch to use (or create `feat/<name>`),
+  then commit in small steps and prompt the user to merge when tests pass.
+- **git worktree caveat:** the SQLite DB in `backend/data/db/` is gitignored, so
+  a fresh worktree starts with no project data. Use worktrees only for features
+  that don't need existing data; otherwise branch in the main checkout (or copy
+  the DB file in).
+
 ## Commands
 
 ### Backend
