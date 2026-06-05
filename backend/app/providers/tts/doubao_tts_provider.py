@@ -245,7 +245,10 @@ class DoubaoTTSProvider(TTSProvider):
         session_finished = False
 
         try:
-            async with websockets.connect(ws_url, additional_headers=headers) as ws:
+            # proxy=None: connect directly. openspeech.bytedance.com is a domestic
+            # API; without this, websockets (>=15) auto-inherits the environment
+            # proxy (incl. a SOCKS one), which both fails and is wrong for this host.
+            async with websockets.connect(ws_url, additional_headers=headers, proxy=None) as ws:
                 # 发送文本帧
                 text_frame = self._build_text_frame(payload)
                 await ws.send(text_frame)

@@ -109,7 +109,10 @@ class XunfeiTTSProvider(TTSProvider):
 
         audio_chunks: list[bytes] = []
 
-        async with websockets.connect(auth_url) as ws:
+        # proxy=None: connect directly. tts-api.xfyun.cn is a domestic API; without
+        # this, websockets (>=15) auto-inherits the environment proxy (incl. a SOCKS
+        # one), which both fails and is wrong for this host.
+        async with websockets.connect(auth_url, proxy=None) as ws:
             await ws.send(json.dumps(ws_data))
 
             while True:
