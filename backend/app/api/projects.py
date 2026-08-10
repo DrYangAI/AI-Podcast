@@ -34,6 +34,21 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+PORTRAIT_SETTING_FIELDS = tuple(
+    field_name
+    for field_name in ProjectCreate.model_fields
+    if field_name.startswith("portrait_")
+)
+
+
+def _resolve_portrait_settings(
+    data: ProjectCreate, defaults: dict[str, object]
+) -> dict[str, object]:
+    return {
+        field_name: defaults.get(field_name, getattr(data, field_name))
+        for field_name in PORTRAIT_SETTING_FIELDS
+    }
+
 
 @router.get("", response_model=PaginatedResponse)
 async def list_projects(
@@ -73,6 +88,7 @@ async def _create_project_and_steps(data: ProjectCreate, db: AsyncSession) -> Pr
     )
     gsetting = gresult.scalar_one_or_none()
     portrait_defaults = json.loads(gsetting.settings_json) if gsetting else {}
+    portrait_settings = _resolve_portrait_settings(data, portrait_defaults)
 
     project = Project(
         title=data.title,
@@ -82,14 +98,7 @@ async def _create_project_and_steps(data: ProjectCreate, db: AsyncSession) -> Pr
         aspect_ratio=data.aspect_ratio,
         video_template=data.video_template,
         image_prompt_language=data.image_prompt_language,
-        portrait_composite_enabled=portrait_defaults.get("portrait_composite_enabled", data.portrait_composite_enabled),
-        portrait_bg_color=portrait_defaults.get("portrait_bg_color", data.portrait_bg_color),
-        portrait_title_text=data.portrait_title_text,
-        portrait_title_font_size=portrait_defaults.get("portrait_title_font_size", 36),
-        portrait_title_y=portrait_defaults.get("portrait_title_y", 82),
-        portrait_video_y=portrait_defaults.get("portrait_video_y", 480),
-        portrait_subtitle_font_size=portrait_defaults.get("portrait_subtitle_font_size", 38),
-        portrait_subtitle_margin_v=portrait_defaults.get("portrait_subtitle_margin_v", 550),
+        **portrait_settings,
         intro_text=data.intro_text,
         outro_text=data.outro_text,
         reference_content=data.reference_content,
@@ -100,7 +109,7 @@ async def _create_project_and_steps(data: ProjectCreate, db: AsyncSession) -> Pr
     await db.flush()
 
     # Initialize pipeline steps
-    portrait_enabled = data.portrait_composite_enabled
+    portrait_enabled = project.portrait_composite_enabled
     for i, step_name in enumerate(PipelineStep.STEP_NAMES):
         if step_name == "topic_input":
             initial_status = "completed"
