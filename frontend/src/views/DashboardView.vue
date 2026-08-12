@@ -11,7 +11,7 @@ const router = useRouter()
 const recentProjects = ref<Project[]>([])
 const loading = ref(false)
 const createDialogVisible = ref(false)
-const createMode = ref<'manual' | 'url' | 'pdf' | 'ppt'>('manual')
+const createMode = ref<'manual' | 'paste' | 'url' | 'pdf' | 'ppt'>('manual')
 const newProject = ref({ title: '', topic: '', aspect_ratio: '16:9', video_template: 'slideshow', image_prompt_language: 'zh', reference_content: '', source_type: 'manual', source_url: '' })
 
 // URL import
@@ -43,7 +43,22 @@ async function loadProjects() {
 }
 
 async function handleCreate() {
-  if (!newProject.value.title || !newProject.value.topic) {
+  if (createMode.value === 'paste') {
+    if (!newProject.value.title) {
+      ElMessage.warning('请填写标题')
+      return
+    }
+    if (!newProject.value.reference_content.trim()) {
+      ElMessage.warning('请粘贴文本内容')
+      return
+    }
+    // The pasted text is the reference the AI must follow. If no explicit
+    // topic/angle is given, fall back to the title as the subject.
+    if (!newProject.value.topic.trim()) {
+      newProject.value.topic = newProject.value.title
+    }
+    newProject.value.source_type = 'paste'
+  } else if (!newProject.value.title || !newProject.value.topic) {
     ElMessage.warning('请填写标题和话题')
     return
   }
@@ -212,6 +227,7 @@ function getStatusLabel(status: string) {
     <el-dialog v-model="createDialogVisible" title="新建项目" width="540px">
       <el-tabs v-model="createMode">
         <el-tab-pane label="手动输入" name="manual" />
+        <el-tab-pane label="粘贴文本" name="paste" />
         <el-tab-pane label="从 URL 导入" name="url" />
         <el-tab-pane label="PDF 论文导入" name="pdf" />
         <el-tab-pane label="从 PPT 导入" name="ppt" />
@@ -233,6 +249,20 @@ function getStatusLabel(status: string) {
         <el-text type="info" size="small" style="display: block; margin-top: 4px;">
           每页幻灯片作为一段画面，对应的备注作为该段口播稿（建议 .pptx，备注更可靠）。
           导入后可直接生成音频与视频。
+        </el-text>
+      </div>
+
+      <!-- 粘贴文本 -->
+      <div v-if="createMode === 'paste'" style="margin-bottom: 16px;">
+        <el-input
+          v-model="newProject.reference_content"
+          type="textarea"
+          :rows="8"
+          placeholder="粘贴文章、资料或任意文本内容，AI 将严格参考这些内容生成文章、图片与口播稿"
+        />
+        <el-text type="info" size="small" style="display: block; margin-top: 4px;">
+          直接粘贴文本内容作为参考资料，AI 会以其核心观点为基础生成后续内容。
+          可在下方填写标题，并可选填「话题」指定生成的角度（留空则以标题为准）。
         </el-text>
       </div>
 
@@ -282,9 +312,14 @@ function getStatusLabel(status: string) {
           <el-input v-model="newProject.title" placeholder="输入项目标题" />
         </el-form-item>
         <el-form-item v-if="createMode !== 'ppt'" label="话题">
-          <el-input v-model="newProject.topic" type="textarea" :rows="3" placeholder="输入健康科普话题" />
+          <el-input
+            v-model="newProject.topic"
+            type="textarea"
+            :rows="3"
+            :placeholder="createMode === 'paste' ? '可选：指定生成角度，留空则以标题为准' : '输入健康科普话题'"
+          />
         </el-form-item>
-        <el-form-item v-if="newProject.reference_content" label="参考资料">
+        <el-form-item v-if="newProject.reference_content && createMode !== 'paste'" label="参考资料">
           <el-input
             v-model="newProject.reference_content"
             type="textarea"
