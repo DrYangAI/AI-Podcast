@@ -86,6 +86,7 @@ export interface Segment {
   image_prompt: string | null
   duration_hint: number | null
   chapter_title: string | null
+  script_text: string | null
 }
 
 export interface ImageAsset {

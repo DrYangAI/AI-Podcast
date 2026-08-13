@@ -53,8 +53,19 @@ export const projectsApi = {
   getSegments(id: string) {
     return apiClient.get<Segment[]>(`/projects/${id}/segments`)
   },
-  updateSegment(projectId: string, segmentId: string, data: { content?: string; image_prompt?: string; chapter_title?: string }) {
+  updateSegment(projectId: string, segmentId: string, data: { content?: string; image_prompt?: string; chapter_title?: string; script_text?: string }) {
     return apiClient.put<Segment>(`/projects/${projectId}/segments/${segmentId}`, data)
+  },
+  createSegment(projectId: string, data: { content: string; image_prompt?: string; chapter_title?: string; script_text?: string; position?: number }) {
+    return apiClient.post<Segment>(`/projects/${projectId}/segments`, data)
+  },
+  deleteSegment(projectId: string, segmentId: string) {
+    return apiClient.delete(`/projects/${projectId}/segments/${segmentId}`)
+  },
+  regenerateSegmentScript(projectId: string, segmentId: string) {
+    return apiClient.post<Segment>(`/projects/${projectId}/segments/${segmentId}/script/regenerate`, null, {
+      timeout: 60000,
+    })
   },
   generateChapterTitles(projectId: string) {
     return apiClient.post<Segment[]>(`/projects/${projectId}/segments/generate-chapter-titles`, null, {

@@ -221,6 +221,7 @@ class SegmentResponse(BaseModel):
     image_prompt: str | None
     duration_hint: float | None
     chapter_title: str | None = None
+    script_text: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -229,6 +230,18 @@ class SegmentUpdate(BaseModel):
     content: str | None = None
     image_prompt: str | None = None
     chapter_title: str | None = None
+    script_text: str | None = None
+
+
+class SegmentCreate(BaseModel):
+    content: str
+    image_prompt: str | None = None
+    chapter_title: str | None = None
+    script_text: str | None = None
+    # Insert position expressed as the target segment_order. The new segment
+    # takes this slot and every existing segment at or after it shifts down by
+    # one. When omitted (or out of range), the segment is appended at the end.
+    position: int | None = None
 
 
 class ImageAssetResponse(BaseModel):

@@ -17,7 +17,7 @@ from ..models import Project, PipelineStep, Article, Segment, ImageAsset, Script
 from ..schemas.project import (
     ProjectCreate, ProjectUpdate, ProjectResponse, ProjectDetailResponse,
     PipelineStepResponse, ArticleResponse, ArticleUpdate,
-    SegmentResponse, SegmentUpdate, ImageAssetResponse, ImageRegenerateRequest,
+    SegmentResponse, SegmentUpdate, SegmentCreate, ImageAssetResponse, ImageRegenerateRequest,
     ScriptResponse, ScriptUpdate, AudioAssetResponse, VideoOutputResponse,
     PaginatedResponse, AudioChunkResponse, AudioChunksListResponse,
 )
@@ -427,6 +427,61 @@ async def generate_chapter_titles(project_id: str, db: AsyncSession = Depends(ge
     return [SegmentResponse.model_validate(s) for s in segments]
 
 
+@router.post("/{project_id}/segments", response_model=SegmentResponse)
+async def create_segment(project_id: str, data: SegmentCreate,
+                         db: AsyncSession = Depends(get_db)):
+    """Manually add a segment, optionally inserting it at a given position.
+
+    Segments downstream (image, script, audio) sync per-segment: the new row
+    appears in the image gallery for AI generation/upload, and its script can
+    be generated or edited individually.
+    """
+    article_result = await db.execute(
+        select(Article).where(Article.project_id == project_id)
+    )
+    article = article_result.scalar_one_or_none()
+    if not article:
+        raise HTTPException(status_code=404, detail="Article not found; generate or import content first")
+
+    seg_result = await db.execute(
+        select(Segment)
+        .where(Segment.project_id == project_id)
+        .order_by(Segment.segment_order)
+    )
+    segments = list(seg_result.scalars().all())
+
+    # Resolve target order: clamp the requested position into [0, len]; append when omitted.
+    if data.position is None:
+        target_order = len(segments)
+    else:
+        target_order = max(0, min(data.position, len(segments)))
+
+    # Shift existing segments at/after the target down by one. Process in
+    # descending order and flush per row so the (article_id, segment_order)
+    # unique constraint never transiently collides.
+    for seg in sorted(
+        (s for s in segments if s.segment_order >= target_order),
+        key=lambda s: s.segment_order,
+        reverse=True,
+    ):
+        seg.segment_order += 1
+        await db.flush()
+
+    segment = Segment(
+        article_id=article.id,
+        project_id=project_id,
+        segment_order=target_order,
+        content=data.content,
+        image_prompt=data.image_prompt,
+        chapter_title=data.chapter_title,
+        script_text=data.script_text,
+    )
+    db.add(segment)
+    await db.flush()
+    await db.refresh(segment)
+    return SegmentResponse.model_validate(segment)
+
+
 @router.put("/{project_id}/segments/{segment_id}", response_model=SegmentResponse)
 async def update_segment(project_id: str, segment_id: str, data: SegmentUpdate,
                           db: AsyncSession = Depends(get_db)):
@@ -441,6 +496,59 @@ async def update_segment(project_id: str, segment_id: str, data: SegmentUpdate,
         setattr(segment, field, value)
 
     await db.flush()
+    return SegmentResponse.model_validate(segment)
+
+
+@router.delete("/{project_id}/segments/{segment_id}")
+async def delete_segment(project_id: str, segment_id: str,
+                         db: AsyncSession = Depends(get_db)):
+    """Delete a segment (and its image, via cascade), then close the gap in ordering."""
+    result = await db.execute(
+        select(Segment).where(Segment.id == segment_id, Segment.project_id == project_id)
+    )
+    segment = result.scalar_one_or_none()
+    if not segment:
+        raise HTTPException(status_code=404, detail="Segment not found")
+
+    removed_order = segment.segment_order
+    await db.delete(segment)
+    await db.flush()
+
+    # Pull every later segment up by one. Process ascending with a flush per row
+    # so the unique constraint never transiently collides.
+    later_result = await db.execute(
+        select(Segment)
+        .where(Segment.project_id == project_id, Segment.segment_order > removed_order)
+        .order_by(Segment.segment_order)
+    )
+    for seg in later_result.scalars().all():
+        seg.segment_order -= 1
+        await db.flush()
+
+    return {"status": "ok"}
+
+
+@router.post("/{project_id}/segments/{segment_id}/script/regenerate", response_model=SegmentResponse)
+async def regenerate_segment_script(project_id: str, segment_id: str,
+                                    db: AsyncSession = Depends(get_db)):
+    """AI-generate the oral broadcast script (口播稿) for a single segment."""
+    result = await db.execute(
+        select(Segment).where(Segment.id == segment_id, Segment.project_id == project_id)
+    )
+    segment = result.scalar_one_or_none()
+    if not segment:
+        raise HTTPException(status_code=404, detail="Segment not found")
+
+    from ..services.script_service import ScriptService
+    try:
+        await ScriptService().regenerate_segment_script(project_id, segment_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Failed to regenerate segment script")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    await db.refresh(segment)
     return SegmentResponse.model_validate(segment)
 
 

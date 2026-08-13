@@ -131,6 +131,90 @@ class ScriptService:
             await db.commit()
             return script
 
+    async def regenerate_segment_script(self, project_id: str, segment_id: str,
+                                        provider_overrides: dict[str, str] | None = None):
+        """Generate the oral broadcast script for a single segment.
+
+        Updates that segment's ``script_text`` and rebuilds the project-level
+        Script (concatenation of all per-segment scripts) so the script view
+        and downstream TTS stay in sync.
+        """
+        settings = get_settings()
+
+        async with async_session_factory() as db:
+            result = await db.execute(
+                select(Segment).where(Segment.id == segment_id, Segment.project_id == project_id)
+            )
+            segment = result.scalar_one_or_none()
+            if not segment:
+                raise ValueError(f"Segment {segment_id} not found")
+
+            provider_config = await self._get_provider(db, "text", provider_overrides)
+            if not provider_config:
+                raise ValueError("No text provider configured")
+
+            api_key = provider_config.api_key
+            if not api_key:
+                key_map = {
+                    "claude": settings.claude_api_key,
+                    "openai": settings.openai_api_key,
+                }
+                api_key = key_map.get(provider_config.provider_key, "")
+
+            extra_config = json.loads(provider_config.config_json) if provider_config.config_json else None
+            text_provider = ProviderRegistry.instantiate(
+                provider_type=ProviderType.TEXT,
+                key=provider_config.provider_key,
+                api_key=api_key,
+                api_base_url=provider_config.api_base_url or "",
+                model_id=provider_config.model_id or "",
+                config=extra_config,
+            )
+
+            style = settings.content.script_default_style
+
+            from ..services.prompt_template_service import PromptTemplateService
+            project = await db.get(Project, project_id)
+            seg_prompt_config = await PromptTemplateService.resolve(
+                db, "segmented_script_generation",
+                project.metadata_json if project else None,
+            )
+
+            response = await text_provider.generate_segmented_script(
+                segments=[segment.content],
+                style=style,
+                prompt_config=seg_prompt_config,
+            )
+            segment_scripts = TextProvider.parse_segmented_script(response.content, 1)
+            segment.script_text = segment_scripts[0] if segment_scripts else segment.content
+
+            # Rebuild the project-level Script from all per-segment scripts so
+            # the script view and TTS concatenation reflect the change.
+            all_segs = await db.execute(
+                select(Segment)
+                .where(Segment.project_id == project_id)
+                .order_by(Segment.segment_order)
+            )
+            full_script = "\n\n".join(
+                s.script_text for s in all_segs.scalars().all() if s.script_text
+            )
+            script_result = await db.execute(select(Script).where(Script.project_id == project_id))
+            script = script_result.scalar_one_or_none()
+            if script:
+                script.content = full_script
+                script.version += 1
+            else:
+                db.add(Script(
+                    project_id=project_id,
+                    content=full_script,
+                    style=style,
+                    provider_id=provider_config.id,
+                    is_manual=False,
+                ))
+
+            await db.commit()
+            return segment
+
     async def _get_provider(self, db, provider_type: str,
                              overrides: dict[str, str] | None = None) -> ProviderConfig | None:
         # Priority: 1. Override, 2. DB default, 3. Env var fallback, 4. First available
