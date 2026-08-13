@@ -55,10 +55,10 @@ cd /Users/mac/AI-Podcast/backend
 pip install -r requirements.txt
 
 # Run development server
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8001
+python -m uvicorn app.main:app --host 127.0.0.1 --port 9527
 
-# Run with auto-reload
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+# Run with auto-reload. This app has no standalone login, so keep it loopback-only.
+python -m uvicorn app.main:app --host 127.0.0.1 --port 9527 --reload
 ```
 
 ### Database migrations (Alembic)
@@ -146,8 +146,8 @@ class MyProvider(TextProvider):
 ## Key Configuration
 
 - Backend config: `/backend/config.yaml`
-- API runs on `http://localhost:8001`
-- Frontend runs on `http://localhost:5173`
+- API runs on `http://127.0.0.1:9527`
+- Frontend runs on `http://127.0.0.1:9528`
 - Static files (images, audio) served from `/data` endpoint
 - Database: SQLite at `./data/db/ai_podcast.db`
 
