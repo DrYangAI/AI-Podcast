@@ -393,11 +393,16 @@ async function savePortraitSettings() {
 
 async function savePortraitAsGlobal() {
   try {
-    await settingsApi.setDefaults('portrait', {
-      portrait_composite_enabled: store.currentProject?.portrait_composite_enabled ?? true,
-      ...getPortraitPayload(),
-    })
-    ElMessage.success('已保存为全局默认，新项目将自动使用这些设置')
+    const payload = getPortraitPayload()
+    await Promise.all([
+      projectsApi.update(projectId.value, payload as any),
+      settingsApi.setDefaults('portrait', {
+        portrait_composite_enabled: store.currentProject?.portrait_composite_enabled ?? true,
+        ...payload,
+      }),
+    ])
+    await store.loadProject(projectId.value)
+    ElMessage.success('已保存当前项目，并设为新项目的全局默认')
   } catch {
     ElMessage.error('保存全局默认失败')
   }
