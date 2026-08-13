@@ -122,6 +122,10 @@ class Settings(BaseSettings):
         default=_yaml.get("app", {}).get("cors_origins", ["http://localhost:5173"])
     )
 
+    # PPT import: optional explicit path to LibreOffice `soffice` binary.
+    # Empty → auto-detect on PATH / the standard macOS app bundle location.
+    soffice_path: str = _yaml.get("ppt", {}).get("soffice_path", "")
+
     database: DatabaseSettings = DatabaseSettings()
     storage: StorageSettings = StorageSettings()
     output: OutputSettings = OutputSettings(

@@ -11,8 +11,12 @@ const router = useRouter()
 const recentProjects = ref<Project[]>([])
 const loading = ref(false)
 const createDialogVisible = ref(false)
-const createMode = ref<'manual' | 'url' | 'pdf'>('manual')
-const newProject = ref({ title: '', topic: '', aspect_ratio: '16:9', video_template: 'slideshow', image_prompt_language: 'zh', reference_content: '', source_type: 'manual', source_url: '' })
+const createMode = ref<'manual' | 'paste' | 'url' | 'pdf' | 'ppt'>('manual')
+
+function makeEmptyProject() {
+  return { title: '', topic: '', aspect_ratio: '16:9', video_template: 'slideshow', image_prompt_language: 'zh', reference_content: '', source_type: 'manual', source_url: '' }
+}
+const newProject = ref(makeEmptyProject())
 
 // URL import
 const importUrl = ref('')
@@ -21,6 +25,10 @@ const extracting = ref(false)
 // PDF import
 const pdfFile = ref<File | null>(null)
 const pdfExtracting = ref(false)
+
+// PPT import
+const pptFile = ref<File | null>(null)
+const pptImporting = ref(false)
 
 onMounted(async () => {
   await loadProjects()
@@ -38,15 +46,51 @@ async function loadProjects() {
   }
 }
 
+function resetNewProject() {
+  newProject.value = makeEmptyProject()
+}
+
+function openCreateDialog() {
+  // Always start from a clean slate so stale text/mode from a previous
+  // (possibly cancelled) session never leaks into a new project.
+  resetNewProject()
+  createMode.value = 'manual'
+  importUrl.value = ''
+  pdfFile.value = null
+  pptFile.value = null
+  createDialogVisible.value = true
+}
+
 async function handleCreate() {
-  if (!newProject.value.title || !newProject.value.topic) {
+  const isPaste = createMode.value === 'paste'
+  if (isPaste) {
+    if (!newProject.value.title.trim()) {
+      ElMessage.warning('请填写标题')
+      return
+    }
+    if (!newProject.value.reference_content.trim()) {
+      ElMessage.warning('请粘贴文本内容')
+      return
+    }
+  } else if (!newProject.value.title.trim() || !newProject.value.topic.trim()) {
     ElMessage.warning('请填写标题和话题')
     return
   }
+  // Build the payload without mutating the shared form state, so a failed
+  // request never leaves a stale source_type/topic behind for the next mode.
+  const payload = isPaste
+    ? {
+        ...newProject.value,
+        source_type: 'paste',
+        // The pasted text is the reference the AI must follow; if no explicit
+        // topic/angle is given, fall back to the title as the subject.
+        topic: newProject.value.topic.trim() || newProject.value.title.trim(),
+      }
+    : newProject.value
   try {
-    const { data } = await projectsApi.create(newProject.value)
+    const { data } = await projectsApi.create(payload)
     createDialogVisible.value = false
-    newProject.value = { title: '', topic: '', aspect_ratio: '16:9', video_template: 'slideshow', image_prompt_language: 'zh', reference_content: '', source_type: 'manual', source_url: '' }
+    resetNewProject()
     router.push(`/projects/${data.id}`)
   } catch {
     ElMessage.error('创建失败')
@@ -101,6 +145,41 @@ async function handleExtractPdf() {
   }
 }
 
+function handlePptChange(file: any) {
+  pptFile.value = file.raw
+  // Pre-fill the title from the filename if the user hasn't typed one.
+  if (!newProject.value.title && file.name) {
+    newProject.value.title = file.name.replace(/\.(pptx?|PPTX?)$/, '')
+  }
+}
+
+async function handlePptImport() {
+  if (!pptFile.value) {
+    ElMessage.warning('请选择 PPT 文件')
+    return
+  }
+  if (!newProject.value.title) {
+    ElMessage.warning('请填写标题')
+    return
+  }
+  pptImporting.value = true
+  try {
+    const { data } = await projectsApi.importPpt(pptFile.value, {
+      title: newProject.value.title,
+      aspect_ratio: newProject.value.aspect_ratio,
+      video_template: newProject.value.video_template,
+    })
+    createDialogVisible.value = false
+    pptFile.value = null
+    ElMessage.success('PPT 导入中：幻灯片转为画面、备注转为口播稿，稍候即可生成音频和视频')
+    router.push(`/projects/${data.id}`)
+  } catch {
+    ElMessage.error('PPT 导入失败，请确认文件格式正确并已安装 LibreOffice')
+  } finally {
+    pptImporting.value = false
+  }
+}
+
 function getStatusType(status: string) {
   const map: Record<string, string> = {
     draft: 'info', processing: 'warning', completed: 'success', failed: 'danger',
@@ -120,7 +199,7 @@ function getStatusLabel(status: string) {
   <div class="dashboard">
     <div class="dashboard-header">
       <h1>AI Podcast 控制台</h1>
-      <el-button type="primary" size="large" @click="createDialogVisible = true">
+      <el-button type="primary" size="large" @click="openCreateDialog">
         <el-icon><Plus /></el-icon> 新建项目
       </el-button>
     </div>
@@ -173,9 +252,44 @@ function getStatusLabel(status: string) {
     <el-dialog v-model="createDialogVisible" title="新建项目" width="540px">
       <el-tabs v-model="createMode">
         <el-tab-pane label="手动输入" name="manual" />
+        <el-tab-pane label="粘贴文本" name="paste" />
         <el-tab-pane label="从 URL 导入" name="url" />
         <el-tab-pane label="PDF 论文导入" name="pdf" />
+        <el-tab-pane label="从 PPT 导入" name="ppt" />
       </el-tabs>
+
+      <!-- PPT 导入 -->
+      <div v-if="createMode === 'ppt'" style="margin-bottom: 16px;">
+        <el-upload
+          :auto-upload="false"
+          accept=".pptx,.ppt"
+          :limit="1"
+          :on-change="handlePptChange"
+          :on-exceed="() => ElMessage.warning('只能上传一个 PPT 文件')"
+          drag
+        >
+          <el-icon style="font-size: 40px; color: #909399;"><UploadFilled /></el-icon>
+          <div style="margin-top: 8px;">将 PPT 文件拖到此处，或<em>点击上传</em></div>
+        </el-upload>
+        <el-text type="info" size="small" style="display: block; margin-top: 4px;">
+          每页幻灯片作为一段画面，对应的备注作为该段口播稿（建议 .pptx，备注更可靠）。
+          导入后可直接生成音频与视频。
+        </el-text>
+      </div>
+
+      <!-- 粘贴文本 -->
+      <div v-if="createMode === 'paste'" style="margin-bottom: 16px;">
+        <el-input
+          v-model="newProject.reference_content"
+          type="textarea"
+          :rows="8"
+          placeholder="粘贴文章、资料或任意文本内容，AI 将严格参考这些内容生成文章、图片与口播稿"
+        />
+        <el-text type="info" size="small" style="display: block; margin-top: 4px;">
+          直接粘贴文本内容作为参考资料，AI 会以其核心观点为基础生成后续内容。
+          可在下方填写标题，并可选填「话题」指定生成的角度（留空则以标题为准）。
+        </el-text>
+      </div>
 
       <!-- URL 导入 -->
       <div v-if="createMode === 'url'" style="margin-bottom: 16px;">
@@ -222,10 +336,15 @@ function getStatusLabel(status: string) {
         <el-form-item label="标题">
           <el-input v-model="newProject.title" placeholder="输入项目标题" />
         </el-form-item>
-        <el-form-item label="话题">
-          <el-input v-model="newProject.topic" type="textarea" :rows="3" placeholder="输入健康科普话题" />
+        <el-form-item v-if="createMode !== 'ppt'" label="话题">
+          <el-input
+            v-model="newProject.topic"
+            type="textarea"
+            :rows="3"
+            :placeholder="createMode === 'paste' ? '可选：指定生成角度，留空则以标题为准' : '输入健康科普话题'"
+          />
         </el-form-item>
-        <el-form-item v-if="newProject.reference_content" label="参考资料">
+        <el-form-item v-if="newProject.reference_content && createMode !== 'paste'" label="参考资料">
           <el-input
             v-model="newProject.reference_content"
             type="textarea"
@@ -249,7 +368,7 @@ function getStatusLabel(status: string) {
             <el-option label="Ken Burns" value="kenburns" />
           </el-select>
         </el-form-item>
-        <el-form-item label="图片文字">
+        <el-form-item v-if="createMode !== 'ppt'" label="图片文字">
           <el-radio-group v-model="newProject.image_prompt_language">
             <el-radio-button value="zh">中文</el-radio-button>
             <el-radio-button value="en">英文</el-radio-button>
@@ -258,7 +377,13 @@ function getStatusLabel(status: string) {
       </el-form>
       <template #footer>
         <el-button @click="createDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleCreate">创建</el-button>
+        <el-button
+          v-if="createMode === 'ppt'"
+          type="primary"
+          :loading="pptImporting"
+          @click="handlePptImport"
+        >导入并创建</el-button>
+        <el-button v-else type="primary" @click="handleCreate">创建</el-button>
       </template>
     </el-dialog>
   </div>

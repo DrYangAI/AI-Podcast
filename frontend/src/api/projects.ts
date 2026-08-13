@@ -16,6 +16,19 @@ export const projectsApi = {
     return apiClient.post<Project>('/projects', data)
   },
 
+  importPpt(file: File, opts: { title: string; aspect_ratio?: string; video_template?: string; subtitle_enabled?: boolean }) {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('title', opts.title)
+    if (opts.aspect_ratio) formData.append('aspect_ratio', opts.aspect_ratio)
+    if (opts.video_template) formData.append('video_template', opts.video_template)
+    if (opts.subtitle_enabled !== undefined) formData.append('subtitle_enabled', String(opts.subtitle_enabled))
+    return apiClient.post<Project>('/projects/import-ppt', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000,
+    })
+  },
+
   update(id: string, data: Partial<Project>) {
     return apiClient.put<Project>(`/projects/${id}`, data)
   },
