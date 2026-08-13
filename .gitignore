@@ -43,3 +43,14 @@ restart.sh
 
 # Claude Code
 .claude/
+
+# 本地 VoxCPM TTS:忽略重资产,保留服务代码
+local-tts/venv/
+local-tts/*.wav
+local-tts/*.log
+local-tts/__pycache__/
+local-tts/audition*.py
+local-tts/*.mp3
+local-tts/svc_*
+local-tts/provider_test.*
+local-tts/*headers*

@@ -126,15 +126,32 @@ class AudioService:
             voice_display = ""
             use_icl = False
 
+            is_local_voxcpm = tts_config.provider_key == "local_voxcpm"
+
+            def _resolve_clone(vc) -> str:
+                """克隆声音 -> voice_id。本地 VoxCPM 用参考音频绝对路径(零样本、免训练);
+                其它(如豆包 ICL)用训练后的 speaker_id。"""
+                if is_local_voxcpm:
+                    if vc.reference_audio_path:
+                        ref = Path(vc.reference_audio_path)
+                        ref = ref if ref.is_absolute() else ref.resolve()
+                        if ref.exists():
+                            return str(ref)
+                    return ""
+                if vc.speaker_id and vc.training_status in (2, 4):
+                    return vc.speaker_id
+                return ""
+
             if project and getattr(project, "tts_voice_clone_id", None):
-                # 项目指定了克隆声音 — 使用训练后的 speaker_id
+                # 项目指定了克隆声音
                 voice_clone = await db.get(VoiceClone, project.tts_voice_clone_id)
-                if voice_clone and voice_clone.speaker_id and voice_clone.training_status in (2, 4):
-                    voice_id = voice_clone.speaker_id
-                    use_icl = True
-                    voice_display = f"clone:{voice_clone.name}"
-                    logger.info("Using cloned voice: %s (speaker_id=%s, project override)",
-                                voice_clone.name, voice_clone.speaker_id)
+                if voice_clone:
+                    resolved = _resolve_clone(voice_clone)
+                    if resolved:
+                        voice_id = resolved
+                        use_icl = True
+                        voice_display = f"clone:{voice_clone.name}"
+                        logger.info("Using cloned voice: %s (project override)", voice_clone.name)
 
             if not voice_id and project and getattr(project, "tts_voice_id", None):
                 # 项目指定了预置声音
@@ -148,12 +165,13 @@ class AudioService:
                     select(VoiceClone).where(VoiceClone.is_default == True)
                 )
                 default_clone = result.scalar_one_or_none()
-                if default_clone and default_clone.speaker_id and default_clone.training_status in (2, 4):
-                    voice_id = default_clone.speaker_id
-                    use_icl = True
-                    voice_display = f"clone:{default_clone.name}"
-                    logger.info("Using cloned voice: %s (speaker_id=%s, global default)",
-                                default_clone.name, default_clone.speaker_id)
+                if default_clone:
+                    resolved = _resolve_clone(default_clone)
+                    if resolved:
+                        voice_id = resolved
+                        use_icl = True
+                        voice_display = f"clone:{default_clone.name}"
+                        logger.info("Using cloned voice: %s (global default)", default_clone.name)
 
             if not voice_id:
                 # Provider 默认声音
