@@ -12,7 +12,11 @@ const recentProjects = ref<Project[]>([])
 const loading = ref(false)
 const createDialogVisible = ref(false)
 const createMode = ref<'manual' | 'paste' | 'url' | 'pdf' | 'ppt'>('manual')
-const newProject = ref({ title: '', topic: '', aspect_ratio: '16:9', video_template: 'slideshow', image_prompt_language: 'zh', reference_content: '', source_type: 'manual', source_url: '' })
+
+function makeEmptyProject() {
+  return { title: '', topic: '', aspect_ratio: '16:9', video_template: 'slideshow', image_prompt_language: 'zh', reference_content: '', source_type: 'manual', source_url: '' }
+}
+const newProject = ref(makeEmptyProject())
 
 // URL import
 const importUrl = ref('')
@@ -42,9 +46,25 @@ async function loadProjects() {
   }
 }
 
+function resetNewProject() {
+  newProject.value = makeEmptyProject()
+}
+
+function openCreateDialog() {
+  // Always start from a clean slate so stale text/mode from a previous
+  // (possibly cancelled) session never leaks into a new project.
+  resetNewProject()
+  createMode.value = 'manual'
+  importUrl.value = ''
+  pdfFile.value = null
+  pptFile.value = null
+  createDialogVisible.value = true
+}
+
 async function handleCreate() {
-  if (createMode.value === 'paste') {
-    if (!newProject.value.title) {
+  const isPaste = createMode.value === 'paste'
+  if (isPaste) {
+    if (!newProject.value.title.trim()) {
       ElMessage.warning('请填写标题')
       return
     }
@@ -52,20 +72,25 @@ async function handleCreate() {
       ElMessage.warning('请粘贴文本内容')
       return
     }
-    // The pasted text is the reference the AI must follow. If no explicit
-    // topic/angle is given, fall back to the title as the subject.
-    if (!newProject.value.topic.trim()) {
-      newProject.value.topic = newProject.value.title
-    }
-    newProject.value.source_type = 'paste'
-  } else if (!newProject.value.title || !newProject.value.topic) {
+  } else if (!newProject.value.title.trim() || !newProject.value.topic.trim()) {
     ElMessage.warning('请填写标题和话题')
     return
   }
+  // Build the payload without mutating the shared form state, so a failed
+  // request never leaves a stale source_type/topic behind for the next mode.
+  const payload = isPaste
+    ? {
+        ...newProject.value,
+        source_type: 'paste',
+        // The pasted text is the reference the AI must follow; if no explicit
+        // topic/angle is given, fall back to the title as the subject.
+        topic: newProject.value.topic.trim() || newProject.value.title.trim(),
+      }
+    : newProject.value
   try {
-    const { data } = await projectsApi.create(newProject.value)
+    const { data } = await projectsApi.create(payload)
     createDialogVisible.value = false
-    newProject.value = { title: '', topic: '', aspect_ratio: '16:9', video_template: 'slideshow', image_prompt_language: 'zh', reference_content: '', source_type: 'manual', source_url: '' }
+    resetNewProject()
     router.push(`/projects/${data.id}`)
   } catch {
     ElMessage.error('创建失败')
@@ -174,7 +199,7 @@ function getStatusLabel(status: string) {
   <div class="dashboard">
     <div class="dashboard-header">
       <h1>AI Podcast 控制台</h1>
-      <el-button type="primary" size="large" @click="createDialogVisible = true">
+      <el-button type="primary" size="large" @click="openCreateDialog">
         <el-icon><Plus /></el-icon> 新建项目
       </el-button>
     </div>
