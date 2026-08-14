@@ -38,9 +38,6 @@ frontend/dist/
 backend/.server.log
 *.log
 
-# Scripts (local only)
-restart.sh
-
 # Claude Code
 .claude/
 
