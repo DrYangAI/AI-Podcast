@@ -47,6 +47,7 @@ const voicesLoading = ref(false)
 const cloneDialogVisible = ref(false)
 const cloneForm = ref({
   name: '',
+  provider_key: 'doubao_tts',
   speaker_id: '',
   reference_text: '',
   is_default: false,
@@ -205,7 +206,7 @@ async function handleGenerateTTS() {
 
 // Clone voice handlers
 function openCloneDialog() {
-  cloneForm.value = { name: '', speaker_id: '', reference_text: '', is_default: false }
+  cloneForm.value = { name: '', provider_key: 'doubao_tts', speaker_id: '', reference_text: '', is_default: false }
   cloneFile.value = null
   cloneDialogVisible.value = true
 }
@@ -219,7 +220,13 @@ async function handleCreateClone() {
     ElMessage.warning('请输入声音名称')
     return
   }
-  if (!cloneForm.value.speaker_id.trim()) {
+  const isLocal = cloneForm.value.provider_key === 'local_voxcpm'
+  if (isLocal) {
+    if (!cloneFile.value) {
+      ElMessage.warning('本地 VoxCPM 声音克隆需要上传参考音频样本')
+      return
+    }
+  } else if (!cloneForm.value.speaker_id.trim()) {
     ElMessage.warning('请输入火山引擎音色 ID (speaker_id)')
     return
   }
@@ -229,7 +236,7 @@ async function handleCreateClone() {
     const formData = new FormData()
     formData.append('name', cloneForm.value.name.trim())
     formData.append('speaker_id', cloneForm.value.speaker_id.trim())
-    formData.append('provider_key', 'doubao_tts')
+    formData.append('provider_key', cloneForm.value.provider_key)
     if (cloneFile.value) {
       formData.append('audio_file', cloneFile.value)
     }
@@ -240,7 +247,7 @@ async function handleCreateClone() {
 
     const { data } = await voicesApi.clone(formData)
     const statusInfo = getTrainingStatusTag(data.training_status)
-    const msg = cloneFile.value
+    const msg = (cloneFile.value && !isLocal)
       ? `声音 "${data.name}" 训练已提交（${statusInfo.text}）`
       : `声音 "${data.name}" 已添加（${statusInfo.text}）`
     ElMessage.success(msg)
@@ -588,13 +595,19 @@ async function handleConcatenate() {
         <el-form-item label="声音名称" required>
           <el-input v-model="cloneForm.name" placeholder="如：张老师的声音" />
         </el-form-item>
-        <el-form-item label="音色 ID" required>
+        <el-form-item label="克隆方式" required>
+          <el-radio-group v-model="cloneForm.provider_key">
+            <el-radio-button value="local_voxcpm">本地 VoxCPM（零样本·免训练）</el-radio-button>
+            <el-radio-button value="doubao_tts">豆包（云端训练）</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item v-if="cloneForm.provider_key === 'doubao_tts'" label="音色 ID" required>
           <el-input v-model="cloneForm.speaker_id" placeholder="如：S_xxxxxxx（从火山引擎控制台获取）" />
           <el-text size="small" type="info" style="margin-top: 4px; display: block;">
             需要在火山引擎控制台购买声音复刻服务后获取 speaker_id
           </el-text>
         </el-form-item>
-        <el-form-item label="参考音频">
+        <el-form-item label="参考音频" :required="cloneForm.provider_key === 'local_voxcpm'">
           <el-upload
             :auto-upload="false"
             :limit="1"
@@ -606,7 +619,9 @@ async function handleConcatenate() {
             </el-button>
             <template #tip>
               <div class="el-upload__tip">
-                可选。上传音频将调用火山引擎训练接口；不上传则直接使用已训练好的 speaker_id
+                {{ cloneForm.provider_key === 'local_voxcpm'
+                  ? '必填。上传该人声的干净样本（十几秒即可），本地零样本克隆、无需训练、即时可用。'
+                  : '可选。上传音频将调用火山引擎训练接口；不上传则直接使用已训练好的 speaker_id' }}
               </div>
             </template>
           </el-upload>
