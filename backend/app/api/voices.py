@@ -304,54 +304,66 @@ async def preview_voice_clone(voice_id: str, db: AsyncSession = Depends(get_db))
             detail=f"声音尚未训练完成（当前状态: {voice.training_status}）。请先等待训练完成或刷新状态。"
         )
 
-    if not voice.speaker_id:
+    is_local = voice.provider_key == "local_voxcpm"
+    if not is_local and not voice.speaker_id:
         raise HTTPException(status_code=400, detail="缺少 speaker_id")
 
-    # Find the TTS provider config
-    result = await db.execute(
-        select(ProviderConfig).where(
-            ProviderConfig.provider_type == "tts",
-            ProviderConfig.provider_key == voice.provider_key,
-            ProviderConfig.is_active == True,
-        )
-    )
-    provider_config = result.scalars().first()
-    if not provider_config:
+    settings = get_settings()
+
+    if is_local:
+        # 本地 VoxCPM:零样本,无需凭据/ProviderConfig,直接实例化本地 provider
+        try:
+            tts_provider = ProviderRegistry.instantiate(
+                provider_type=ProviderType.TTS, key="local_voxcpm",
+                api_key="", api_base_url="", model_id="", config={},
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"本地 TTS 提供商初始化失败: {e}")
+    else:
+        # Find the TTS provider config
         result = await db.execute(
             select(ProviderConfig).where(
                 ProviderConfig.provider_type == "tts",
+                ProviderConfig.provider_key == voice.provider_key,
                 ProviderConfig.is_active == True,
             )
         )
         provider_config = result.scalars().first()
+        if not provider_config:
+            result = await db.execute(
+                select(ProviderConfig).where(
+                    ProviderConfig.provider_type == "tts",
+                    ProviderConfig.is_active == True,
+                )
+            )
+            provider_config = result.scalars().first()
 
-    if not provider_config:
-        raise HTTPException(status_code=400, detail="未找到可用的 TTS 提供商，请先配置")
+        if not provider_config:
+            raise HTTPException(status_code=400, detail="未找到可用的 TTS 提供商，请先配置")
 
-    settings = get_settings()
-    api_key = provider_config.api_key
-    if not api_key:
-        key_map = {
-            "doubao_tts": getattr(settings, "doubao_api_key", ""),
-            "openai_tts": getattr(settings, "openai_api_key", ""),
-            "minimax_tts": getattr(settings, "minimax_api_key", ""),
-        }
-        api_key = key_map.get(provider_config.provider_key, "")
+        api_key = provider_config.api_key
+        if not api_key:
+            key_map = {
+                "doubao_tts": getattr(settings, "doubao_api_key", ""),
+                "openai_tts": getattr(settings, "openai_api_key", ""),
+                "minimax_tts": getattr(settings, "minimax_api_key", ""),
+            }
+            api_key = key_map.get(provider_config.provider_key, "")
 
-    extra_config = json.loads(provider_config.config_json) if provider_config.config_json else {}
+        extra_config = json.loads(provider_config.config_json) if provider_config.config_json else {}
 
-    try:
-        provider_type = ProviderType(provider_config.provider_type)
-        tts_provider = ProviderRegistry.instantiate(
-            provider_type=provider_type,
-            key=provider_config.provider_key,
-            api_key=api_key or "",
-            api_base_url=provider_config.api_base_url or "",
-            model_id=provider_config.model_id or "",
-            config=extra_config,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"TTS 提供商初始化失败: {e}")
+        try:
+            provider_type = ProviderType(provider_config.provider_type)
+            tts_provider = ProviderRegistry.instantiate(
+                provider_type=provider_type,
+                key=provider_config.provider_key,
+                api_key=api_key or "",
+                api_base_url=provider_config.api_base_url or "",
+                model_id=provider_config.model_id or "",
+                config=extra_config,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"TTS 提供商初始化失败: {e}")
 
     # Synthesize preview using the trained speaker_id
     from ..providers.tts.base import TTSRequest
@@ -361,10 +373,15 @@ async def preview_voice_clone(voice_id: str, db: AsyncSession = Depends(get_db))
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"preview_{voice_id[:8]}_{uuid.uuid4().hex[:6]}.mp3"
 
-    # Use speaker_id as voice_id; the provider will use ICL resource_id
+    # local_voxcpm 用参考音频绝对路径;其它用训练后的 speaker_id
+    if is_local:
+        ref = Path(voice.reference_audio_path)
+        preview_voice_id = str(ref if ref.is_absolute() else ref.resolve())
+    else:
+        preview_voice_id = voice.speaker_id
     request = TTSRequest(
         text=preview_text,
-        voice_id=voice.speaker_id,
+        voice_id=preview_voice_id,
         use_icl=True,
     )
 
