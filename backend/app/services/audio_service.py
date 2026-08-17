@@ -118,9 +118,23 @@ class AudioService:
                 extra_config = {}
                 logger.info("Selected clone is local_voxcpm -> using local VoxCPM provider")
             else:
-                if not tts_config:
-                    raise ValueError("No TTS provider configured")
-                api_key = tts_config.api_key
+                # 非本地克隆:优先用与该克隆 provider_key 匹配的 provider 配置,而不是
+                # 全局默认(默认现在可能是 local_voxcpm,拿它跑豆包 speaker_id 会出错)。
+                provider_cfg = tts_config
+                if effective_clone and effective_clone.provider_key:
+                    pc_result = await db.execute(
+                        select(ProviderConfig).where(
+                            ProviderConfig.provider_type == "tts",
+                            ProviderConfig.provider_key == effective_clone.provider_key,
+                        )
+                    )
+                    matched = pc_result.scalar_one_or_none()
+                    if matched:
+                        provider_cfg = matched
+                if not provider_cfg:
+                    raise ValueError(
+                        f"未配置 {effective_clone.provider_key if effective_clone else 'TTS'} provider")
+                api_key = provider_cfg.api_key
                 if not api_key:
                     key_map = {
                         "openai_tts": settings.openai_api_key,
@@ -128,17 +142,17 @@ class AudioService:
                         "doubao_tts": settings.doubao_api_key,
                         "minimax_tts": settings.minimax_api_key,
                     }
-                    api_key = key_map.get(tts_config.provider_key, "")
-                extra_config = json.loads(tts_config.config_json) if tts_config.config_json else None
+                    api_key = key_map.get(provider_cfg.provider_key, "")
+                extra_config = json.loads(provider_cfg.config_json) if provider_cfg.config_json else None
                 tts_provider = ProviderRegistry.instantiate(
                     provider_type=ProviderType.TTS,
-                    key=tts_config.provider_key,
+                    key=provider_cfg.provider_key,
                     api_key=api_key,
-                    api_base_url=tts_config.api_base_url or "",
-                    model_id=tts_config.model_id or "",
+                    api_base_url=provider_cfg.api_base_url or "",
+                    model_id=provider_cfg.model_id or "",
                     config=extra_config,
                 )
-                provider_key_used = tts_config.provider_key
+                provider_key_used = provider_cfg.provider_key
 
             # Generate audio
             output_dir = Path(settings.storage.base_dir) / "audio" / project_id
@@ -485,56 +499,47 @@ class AudioService:
                         chunk["text"] = fresh_text
                         chunk["chars"] = len(fresh_text)
 
-            # 参考音频可能在生成之后被更换(例如换成更干净的样本)。chunks.json 里
-            # 烙进去的是首次生成时的旧参考路径,单段重生成若直接沿用会用到旧参考
-            # (旧噪音样本 -> 背景乐 + 尾巴泄漏成前缀)。这里优先用项目【当前选中】
-            # 的本地克隆声音的最新参考路径覆盖它。
-            proj_result = await db.execute(
-                select(Project).where(Project.id == project_id)
-            )
-            cur_project = proj_result.scalar_one_or_none()
+            # 声音以【项目当前选择】为准重新解析,不信 chunks.json 里烙进去的旧
+            # voice_id(否则切换声音后单段重生成仍用旧声音/旧参考)。逻辑与整步生成
+            # 一致:先按当前克隆声音判定 provider(本地 VoxCPM / 豆包...),再解析 voice_id。
+            cur_project = await db.get(Project, project_id)
+            effective_clone = None
             if cur_project and cur_project.tts_voice_clone_id:
-                vc_result = await db.execute(
-                    select(VoiceClone).where(VoiceClone.id == cur_project.tts_voice_clone_id)
+                effective_clone = await db.get(VoiceClone, cur_project.tts_voice_clone_id)
+            elif not (cur_project and cur_project.tts_voice_id):
+                # 项目没选任何声音 -> 看全局默认克隆
+                _dc = await db.execute(
+                    select(VoiceClone).where(VoiceClone.is_default == True)
                 )
-                cur_clone = vc_result.scalar_one_or_none()
-                if (cur_clone and cur_clone.provider_key == "local_voxcpm"
-                        and cur_clone.reference_audio_path):
-                    ref = Path(cur_clone.reference_audio_path)
-                    ref = ref if ref.is_absolute() else ref.resolve()
-                    if ref.exists() and str(ref) != voice_id:
-                        logger.info("Regenerate: 用当前本地声音最新参考覆盖旧路径 %s -> %s",
-                                    voice_id, ref)
-                        voice_id = str(ref)
+                effective_clone = _dc.scalar_one_or_none()
 
-            # Resolve voice_id: 显示名 "clone:XXX" -> 实际音色。
-            # 本地 VoxCPM 用参考音频路径 + 本地 provider;豆包等用 speaker_id。
-            force_local = False
-            if voice_id and Path(voice_id).exists():
-                # voice_id 指向存在的音频文件 -> 本地零样本参考音频(local_voxcpm)
-                force_local = True
-            elif voice_id.startswith("clone:") and use_icl:
-                clone_name = voice_id[len("clone:"):]
-                clone_result = await db.execute(
-                    select(VoiceClone).where(VoiceClone.name == clone_name)
-                )
-                voice_clone = clone_result.scalar_one_or_none()
-                if not voice_clone:
-                    raise ValueError(f"Cannot resolve cloned voice '{clone_name}' - not found")
-                if voice_clone.provider_key == "local_voxcpm":
-                    ref = Path(voice_clone.reference_audio_path)
+            force_local = bool(effective_clone and effective_clone.provider_key == "local_voxcpm")
+
+            if effective_clone:
+                if force_local:
+                    if not effective_clone.reference_audio_path:
+                        raise ValueError(f"本地克隆声音 '{effective_clone.name}' 缺少参考音频")
+                    ref = Path(effective_clone.reference_audio_path)
                     ref = ref if ref.is_absolute() else ref.resolve()
                     if not ref.exists():
-                        raise ValueError(f"本地克隆声音 '{clone_name}' 参考音频不存在: {ref}")
-                    voice_id = str(ref)
-                    force_local = True
-                    logger.info("Resolved local clone '%s' to reference audio", clone_name)
-                elif voice_clone.speaker_id:
-                    logger.info("Resolved clone display name '%s' to speaker_id '%s'",
-                                clone_name, voice_clone.speaker_id)
-                    voice_id = voice_clone.speaker_id
+                        raise ValueError(f"本地克隆声音 '{effective_clone.name}' 参考音频不存在: {ref}")
+                    new_voice_id = str(ref)
                 else:
-                    raise ValueError(f"Cannot resolve cloned voice '{clone_name}' - missing speaker_id")
+                    if not (effective_clone.speaker_id and effective_clone.training_status in (2, 4)):
+                        raise ValueError(
+                            f"克隆声音 '{effective_clone.name}' 不可用(缺 speaker_id 或未就绪)")
+                    new_voice_id = effective_clone.speaker_id
+                if new_voice_id != voice_id:
+                    logger.info("Regenerate: 用项目当前声音覆盖旧声音 %s -> clone:%s",
+                                voice_display, effective_clone.name)
+                voice_id = new_voice_id
+                use_icl = True
+                voice_display = f"clone:{effective_clone.name}"
+            elif cur_project and cur_project.tts_voice_id:
+                voice_id = cur_project.tts_voice_id
+                voice_display = voice_id
+                use_icl = False
+            # else: 项目未选声音,沿用 chunks.json 里的 voice_id/use_icl 作保底
 
             if force_local:
                 tts_provider = ProviderRegistry.instantiate(
@@ -542,9 +547,23 @@ class AudioService:
                     api_key="", api_base_url="", model_id="", config={},
                 )
             else:
-                if not tts_config:
-                    raise ValueError("No TTS provider configured")
-                api_key = tts_config.api_key
+                # 非本地克隆:优先用与该克隆 provider_key 匹配的 provider 配置,而不是
+                # 全局默认(默认现在可能是 local_voxcpm,拿它跑豆包 speaker_id 会出错)。
+                provider_cfg = tts_config
+                if effective_clone and effective_clone.provider_key:
+                    pc_result = await db.execute(
+                        select(ProviderConfig).where(
+                            ProviderConfig.provider_type == "tts",
+                            ProviderConfig.provider_key == effective_clone.provider_key,
+                        )
+                    )
+                    matched = pc_result.scalar_one_or_none()
+                    if matched:
+                        provider_cfg = matched
+                if not provider_cfg:
+                    raise ValueError(
+                        f"未配置 {effective_clone.provider_key if effective_clone else 'TTS'} provider")
+                api_key = provider_cfg.api_key
                 if not api_key:
                     key_map = {
                         "openai_tts": settings.openai_api_key,
@@ -552,16 +571,17 @@ class AudioService:
                         "doubao_tts": settings.doubao_api_key,
                         "minimax_tts": settings.minimax_api_key,
                     }
-                    api_key = key_map.get(tts_config.provider_key, "")
-                extra_config = json.loads(tts_config.config_json) if tts_config.config_json else None
+                    api_key = key_map.get(provider_cfg.provider_key, "")
+                extra_config = json.loads(provider_cfg.config_json) if provider_cfg.config_json else None
                 tts_provider = ProviderRegistry.instantiate(
                     provider_type=ProviderType.TTS,
-                    key=tts_config.provider_key,
+                    key=provider_cfg.provider_key,
                     api_key=api_key,
-                    api_base_url=tts_config.api_base_url or "",
-                    model_id=tts_config.model_id or "",
+                    api_base_url=provider_cfg.api_base_url or "",
+                    model_id=provider_cfg.model_id or "",
                     config=extra_config,
                 )
+                provider_key_used = provider_cfg.provider_key
 
         # Re-synthesize the chunk
         chunk_path = chunks_dir / chunk["file"]
