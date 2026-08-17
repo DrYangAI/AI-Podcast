@@ -425,6 +425,7 @@ async function handleConcatenate() {
           style="width: 100%;"
           :loading="voicesLoading"
           filterable
+          @change="saveVoiceSelection"
         >
           <el-option
             v-for="v in presetVoices"
@@ -446,6 +447,7 @@ async function handleConcatenate() {
             placeholder="选择克隆声音"
             style="flex: 1;"
             :loading="voicesLoading"
+            @change="saveVoiceSelection"
           >
             <el-option
               v-for="v in clonedVoices"
