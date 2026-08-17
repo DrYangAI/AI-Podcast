@@ -58,6 +58,9 @@ class LocalVoxCPMProvider(TTSProvider):
             "normalize": True,
             "timesteps": int(self.config.get("timesteps", 15)),
             "cfg_value": float(self.config.get("cfg_value", 2.0)),
+            # 默认不对参考降噪:zipenhancer 会畸变参考尾部并泄漏成每段开头的前缀杂音。
+            # 请上传干净样本;若个别参考确有背景噪音,可在 provider 配置里设 denoise_ref=true。
+            "denoise_ref": bool(self.config.get("denoise_ref", False)),
         }
 
         # trust_env=False:本机服务,不走任何环境代理(避免 SOCKS/HTTP 代理干扰)
