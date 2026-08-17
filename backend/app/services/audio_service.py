@@ -485,6 +485,28 @@ class AudioService:
                         chunk["text"] = fresh_text
                         chunk["chars"] = len(fresh_text)
 
+            # 参考音频可能在生成之后被更换(例如换成更干净的样本)。chunks.json 里
+            # 烙进去的是首次生成时的旧参考路径,单段重生成若直接沿用会用到旧参考
+            # (旧噪音样本 -> 背景乐 + 尾巴泄漏成前缀)。这里优先用项目【当前选中】
+            # 的本地克隆声音的最新参考路径覆盖它。
+            proj_result = await db.execute(
+                select(Project).where(Project.id == project_id)
+            )
+            cur_project = proj_result.scalar_one_or_none()
+            if cur_project and cur_project.tts_voice_clone_id:
+                vc_result = await db.execute(
+                    select(VoiceClone).where(VoiceClone.id == cur_project.tts_voice_clone_id)
+                )
+                cur_clone = vc_result.scalar_one_or_none()
+                if (cur_clone and cur_clone.provider_key == "local_voxcpm"
+                        and cur_clone.reference_audio_path):
+                    ref = Path(cur_clone.reference_audio_path)
+                    ref = ref if ref.is_absolute() else ref.resolve()
+                    if ref.exists() and str(ref) != voice_id:
+                        logger.info("Regenerate: 用当前本地声音最新参考覆盖旧路径 %s -> %s",
+                                    voice_id, ref)
+                        voice_id = str(ref)
+
             # Resolve voice_id: 显示名 "clone:XXX" -> 实际音色。
             # 本地 VoxCPM 用参考音频路径 + 本地 provider;豆包等用 speaker_id。
             force_local = False
