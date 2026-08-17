@@ -69,6 +69,9 @@ if [ "$SKIP_TTS" != "1" ]; then
     log "启动本地 VoxCPM TTS 服务 (端口 $TTS_PORT, 加载模型约需 1-2 分钟) ..."
     WARMUP="$PROJ_DIR/local-tts/ref_yangyisheng_18s.wav"
     [ -f "$WARMUP" ] && export VOXCPM_WARMUP_REF="$WARMUP"
+    # torchaudio.load 依赖 torchcodec + ffmpeg@6 的库
+    [ -d "/opt/homebrew/opt/ffmpeg@6/lib" ] && \
+      export DYLD_FALLBACK_LIBRARY_PATH="/opt/homebrew/opt/ffmpeg@6/lib:${DYLD_FALLBACK_LIBRARY_PATH}"
     cd "$PROJ_DIR"
     nohup local-tts/venv/bin/python local-tts/server.py \
       > "$PROJ_DIR/local-tts/server.log" 2>&1 &

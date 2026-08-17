@@ -51,3 +51,4 @@ local-tts/*.mp3
 local-tts/svc_*
 local-tts/provider_test.*
 local-tts/*headers*
+local-tts/denoised_cache/

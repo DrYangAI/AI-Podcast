@@ -1,27 +1,24 @@
-"""本地 VoxCPM2 TTS 常驻服务.
+"""本地 VoxCPM-0.5B TTS 常驻服务(零样本声音克隆).
 
-启动时加载一次 VoxCPM2 并常驻内存(保持 MPS 内核热 → 稳态 RTF ~2.4)。
-app 后端通过 HTTP 调用它做零样本声音克隆,与主进程解耦。
+用 VoxCPM-0.5B:内存仅 ~3-5GB,适合 18GB Mac(2B 需 ~20GB 会撑爆内存)。
+0.5B 走 prompt 模式克隆,需要参考音频的转写文本;服务内部用 whisper 转写
+并按音频路径缓存,app 端只需传 reference_audio_path(无需关心转写)。
 
-零样本克隆:给一段参考音频(reference_audio_path)即可克隆该音色,无需训练。
-运行:
-    local-tts/venv/bin/python local-tts/server.py
-环境变量:
-    VOXCPM_MODEL_DIR   模型目录(默认 ModelScope 缓存)
-    VOXCPM_PORT        监听端口(默认 9530)
-    VOXCPM_WARMUP_REF  预热用参考音频路径(可选,预编译 MPS 内核)
+运行(务必带 DYLD 路径,否则 torchaudio.load 找不到 ffmpeg 库):
+    DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/opt/ffmpeg@6/lib \
+        local-tts/venv/bin/python local-tts/server.py
 """
 
 import io
 import os
 import time
+import hashlib
 import logging
 
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
-# 【不要】设 PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0:实测它虽能避免 OOM(500),
-# 但会让 2B 在内存紧张时无上限吃 swap,把整机拖到卡死。保留 MPS 默认上限——
-# 内存不够时宁可报 500(可恢复)也不拖垮系统。
-# 正确用法:合成前关掉大应用(Chrome/微信/Clash),给 2B 腾出 ~16GB。
+# 注意:torchaudio 2.x 的 load() 依赖 torchcodec,而 torchcodec 只支持到
+# FFmpeg 6,系统若是 FFmpeg 7 会找不到 libavutil。DYLD_FALLBACK_LIBRARY_PATH
+# 必须在【进程启动前】由 run.sh/restart.sh 设好,在这里设无效(dyld 只读启动时环境)。
 
 import librosa
 import soundfile as sf
@@ -32,60 +29,98 @@ from pydantic import BaseModel, Field
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("voxcpm-server")
 
-MODEL_DIR = os.environ.get(
-    "VOXCPM_MODEL_DIR",
-    os.path.expanduser("~/.cache/modelscope/models/OpenBMB--VoxCPM2/snapshots/master"),
-)
+MODEL_ID = os.environ.get("VOXCPM_MODEL_ID", "OpenBMB/VoxCPM-0.5B")
+WHISPER_MODEL = os.environ.get("VOXCPM_WHISPER", "small")
 PORT = int(os.environ.get("VOXCPM_PORT", "9530"))
 WARMUP_REF = os.environ.get("VOXCPM_WARMUP_REF", "")
 
-# 全局单例:模型只加载一次
 _model = None
 _sample_rate = None
+_whisper = None
+_transcript_cache: dict[str, str] = {}
+_denoised_cache: dict[str, str] = {}
+
+DENOISE_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "denoised_cache")
+os.makedirs(DENOISE_CACHE_DIR, exist_ok=True)
 
 
 def get_model():
     global _model, _sample_rate
     if _model is None:
+        from modelscope import snapshot_download
         from voxcpm import VoxCPM
-        logger.info("Loading VoxCPM2 from %s ...", MODEL_DIR)
+        logger.info("Downloading/loading %s ...", MODEL_ID)
         t0 = time.time()
+        local_dir = snapshot_download(MODEL_ID)
         _model = VoxCPM.from_pretrained(
-            MODEL_DIR, load_denoiser=False, optimize=False,
-            device="mps", local_files_only=True,
+            local_dir, load_denoiser=True, optimize=False, device="mps",
         )
         _sample_rate = _model.tts_model.sample_rate
         logger.info("Model ready in %.1fs (sample_rate=%s)", time.time() - t0, _sample_rate)
     return _model
 
 
+def get_whisper():
+    global _whisper
+    if _whisper is None:
+        import whisper
+        logger.info("Loading whisper '%s' for reference transcription ...", WHISPER_MODEL)
+        _whisper = whisper.load_model(WHISPER_MODEL)
+    return _whisper
+
+
+def transcribe_reference(ref_path: str) -> str:
+    """转写参考音频(按路径缓存,每个声音只转一次)。"""
+    if ref_path in _transcript_cache:
+        return _transcript_cache[ref_path]
+    t0 = time.time()
+    result = get_whisper().transcribe(
+        ref_path, language="zh", fp16=False,
+        initial_prompt="以下是普通话医学科普。",
+    )
+    text = (result.get("text") or "").strip()
+    _transcript_cache[ref_path] = text
+    logger.info("Transcribed reference in %.1fs: %s", time.time() - t0, text[:40])
+    return text
+
+
+def get_denoised_reference(ref_path: str) -> str:
+    """对参考音频降噪【一次】并缓存干净版(按路径)。之后合成用干净版 +
+    denoise=False,避免每次请求都重跑降噪器(那会固定加 ~150s)。"""
+    model = get_model()
+    if getattr(model, "denoiser", None) is None:
+        return ref_path
+    key = hashlib.md5(ref_path.encode("utf-8")).hexdigest()[:12]
+    out = os.path.join(DENOISE_CACHE_DIR, f"{key}.wav")
+    if os.path.exists(out):  # 磁盘缓存:重启后仍有效,不必重降噪
+        _denoised_cache[ref_path] = out
+        return out
+    t0 = time.time()
+    model.denoiser.enhance(ref_path, output_path=out)
+    _denoised_cache[ref_path] = out
+    logger.info("Denoised reference (once) in %.1fs -> %s", time.time() - t0, out)
+    return out
+
+
 class TTSRequest(BaseModel):
     text: str
     reference_audio_path: str = Field(..., description="克隆参考音频的绝对路径")
-    reference_text: str | None = Field(None, description="参考音频转写(可选,保真更高)")
-    speed: float = Field(1.0, gt=0.3, le=2.0, description="语速倍率,<1 更慢(保音调)")
-    normalize: bool = Field(True, description="文本归一化(数字/单位/符号)")
-    timesteps: int = Field(15, ge=4, le=40, description="推理步数,越大越稳越慢")
+    reference_text: str | None = Field(None, description="参考音频转写(不传则服务自动转写并缓存)")
+    speed: float = Field(1.0, gt=0.3, le=2.0)
+    normalize: bool = Field(True)
+    timesteps: int = Field(15, ge=4, le=40)
     cfg_value: float = Field(2.0, ge=1.0, le=4.0)
 
 
-app = FastAPI(title="VoxCPM2 Local TTS")
+app = FastAPI(title="VoxCPM-0.5B Local TTS")
 
 
 @app.on_event("startup")
 def _startup():
-    get_model()  # 加载模型
-    if WARMUP_REF and os.path.exists(WARMUP_REF):
-        logger.info("Warming up (pre-compiling MPS kernels) ...")
-        try:
-            t0 = time.time()
-            get_model().generate(
-                text="预热。", reference_wav_path=WARMUP_REF,
-                cfg_value=2.0, inference_timesteps=10, normalize=False,
-            )
-            logger.info("Warmup done in %.1fs", time.time() - t0)
-        except Exception as e:
-            logger.warning("Warmup failed (non-fatal): %s", e)
+    get_model()
+    get_whisper()
+    # 预热合成暂时禁用:在 uvicorn 启动上下文里跑 generate 会底层崩溃,
+    # 改为首个真实请求时再编译内核(慢一点但不崩)。
 
 
 @app.get("/health")
@@ -95,7 +130,7 @@ def health():
         "model_loaded": _model is not None,
         "sample_rate": _sample_rate,
         "device": "mps",
-        "model_dir": MODEL_DIR,
+        "model": MODEL_ID,
     }
 
 
@@ -108,21 +143,19 @@ def tts(req: TTSRequest):
         raise HTTPException(status_code=400, detail="text 不能为空")
 
     model = get_model()
+    prompt_text = req.reference_text or transcribe_reference(req.reference_audio_path)
+    clean_ref = get_denoised_reference(req.reference_audio_path)  # 降噪一次并缓存
+
     t0 = time.time()
-    kwargs = dict(
+    wav = model.generate(
         text=req.text,
-        reference_wav_path=req.reference_audio_path,
+        prompt_wav_path=clean_ref,
+        prompt_text=prompt_text,
         cfg_value=req.cfg_value,
         inference_timesteps=req.timesteps,
         normalize=req.normalize,
+        denoise=False,  # 参考音频已预降噪,这里不再重跑降噪器
     )
-    # 有参考文本时用 prompt 模式(保真更高)
-    if req.reference_text:
-        kwargs["prompt_wav_path"] = req.reference_audio_path
-        kwargs["prompt_text"] = req.reference_text
-    wav = model.generate(**kwargs)
-
-    # 语速微调(保音调的时间伸缩)
     if abs(req.speed - 1.0) > 1e-3:
         wav = librosa.effects.time_stretch(wav, rate=req.speed)
 
@@ -147,5 +180,4 @@ def tts(req: TTSRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    # 仅本机访问(与 app 的 loopback 安全策略一致)
     uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="info")
