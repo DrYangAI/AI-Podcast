@@ -81,7 +81,7 @@ async def get_voice_clone(voice_id: str, db: AsyncSession = Depends(get_db)):
 @router.post("/clone", response_model=VoiceCloneResponse, status_code=201)
 async def create_voice_clone(
     name: str = Form(...),
-    speaker_id: str = Form(..., description="从火山引擎控制台获取的音色 ID"),
+    speaker_id: str = Form(default="", description="火山引擎音色 ID(豆包需要;本地 VoxCPM 免填)"),
     provider_key: str = Form(default="doubao_tts"),
     reference_text: str = Form(default=None),
     is_default: bool = Form(default=False),
@@ -90,15 +90,18 @@ async def create_voice_clone(
 ):
     """Create a cloned voice entry.
 
-    Two modes:
-    - With audio_file: upload reference audio and call Volcano Engine training API
-    - Without audio_file: register an already-trained voice from Volcano Engine (skips training)
+    Modes:
+    - local_voxcpm: 本地零样本克隆,上传参考音频即用,无需 speaker_id/训练。
+    - doubao_tts + 音频: 上传参考音频并调火山引擎训练。
+    - doubao_tts 无音频: 注册已训练好的音色(跳过训练)。
     """
+    is_local = provider_key == "local_voxcpm"
     file_path_str = ""
-    training_status = 4  # Default: assume already active when no audio uploaded
+    training_status = 4  # 默认:无音频时视为已激活(豆包注册已训练音色)
+    content = b""
 
+    # 保存上传的参考音频(本地零样本 / 豆包上传训练 共用)
     if audio_file and audio_file.filename:
-        # Mode 1: Upload + train
         ext = (audio_file.filename or "").rsplit(".", 1)[-1].lower()
         if ext not in ("mp3", "wav", "ogg", "flac", "m4a", "aac", "pcm"):
             raise HTTPException(
@@ -111,14 +114,23 @@ async def create_voice_clone(
         voice_dir.mkdir(parents=True, exist_ok=True)
 
         file_id = uuid.uuid4().hex[:12]
-        filename = f"ref_{file_id}.{ext}"
-        file_path = voice_dir / filename
+        file_path = voice_dir / f"ref_{file_id}.{ext}"
 
         content = await audio_file.read()
         file_path.write_bytes(content)
         file_path_str = str(file_path)
 
-        # Call Volcano Engine voice_clone training API
+    if is_local:
+        # 本地 VoxCPM:零样本克隆,必须有参考音频,存下即用,不做云端训练
+        if not file_path_str:
+            raise HTTPException(status_code=400,
+                                detail="本地 VoxCPM 声音克隆需要上传参考音频样本")
+        training_status = 2  # ready(零样本即用)
+    elif file_path_str:
+        # 豆包:上传参考音频并调火山引擎训练,需要 speaker_id
+        if not speaker_id:
+            raise HTTPException(status_code=400, detail="豆包声音克隆需要 speaker_id")
+        ext = file_path_str.rsplit(".", 1)[-1].lower()
         app_id, api_key = await _get_doubao_tts_credentials(db)
         audio_b64 = base64.b64encode(content).decode()
         train_payload = {
@@ -160,6 +172,12 @@ async def create_voice_clone(
                     )
         except httpx.HTTPError as e:
             raise HTTPException(status_code=500, detail=f"声音训练请求失败: {e}")
+    elif not speaker_id:
+        # 豆包无音频模式:注册已训练音色,必须有 speaker_id
+        raise HTTPException(
+            status_code=400,
+            detail="请上传参考音频,或填写已训练音色的 speaker_id"
+        )
 
     # If setting as default, unset others
     if is_default:
@@ -286,54 +304,66 @@ async def preview_voice_clone(voice_id: str, db: AsyncSession = Depends(get_db))
             detail=f"声音尚未训练完成（当前状态: {voice.training_status}）。请先等待训练完成或刷新状态。"
         )
 
-    if not voice.speaker_id:
+    is_local = voice.provider_key == "local_voxcpm"
+    if not is_local and not voice.speaker_id:
         raise HTTPException(status_code=400, detail="缺少 speaker_id")
 
-    # Find the TTS provider config
-    result = await db.execute(
-        select(ProviderConfig).where(
-            ProviderConfig.provider_type == "tts",
-            ProviderConfig.provider_key == voice.provider_key,
-            ProviderConfig.is_active == True,
-        )
-    )
-    provider_config = result.scalars().first()
-    if not provider_config:
+    settings = get_settings()
+
+    if is_local:
+        # 本地 VoxCPM:零样本,无需凭据/ProviderConfig,直接实例化本地 provider
+        try:
+            tts_provider = ProviderRegistry.instantiate(
+                provider_type=ProviderType.TTS, key="local_voxcpm",
+                api_key="", api_base_url="", model_id="", config={},
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"本地 TTS 提供商初始化失败: {e}")
+    else:
+        # Find the TTS provider config
         result = await db.execute(
             select(ProviderConfig).where(
                 ProviderConfig.provider_type == "tts",
+                ProviderConfig.provider_key == voice.provider_key,
                 ProviderConfig.is_active == True,
             )
         )
         provider_config = result.scalars().first()
+        if not provider_config:
+            result = await db.execute(
+                select(ProviderConfig).where(
+                    ProviderConfig.provider_type == "tts",
+                    ProviderConfig.is_active == True,
+                )
+            )
+            provider_config = result.scalars().first()
 
-    if not provider_config:
-        raise HTTPException(status_code=400, detail="未找到可用的 TTS 提供商，请先配置")
+        if not provider_config:
+            raise HTTPException(status_code=400, detail="未找到可用的 TTS 提供商，请先配置")
 
-    settings = get_settings()
-    api_key = provider_config.api_key
-    if not api_key:
-        key_map = {
-            "doubao_tts": getattr(settings, "doubao_api_key", ""),
-            "openai_tts": getattr(settings, "openai_api_key", ""),
-            "minimax_tts": getattr(settings, "minimax_api_key", ""),
-        }
-        api_key = key_map.get(provider_config.provider_key, "")
+        api_key = provider_config.api_key
+        if not api_key:
+            key_map = {
+                "doubao_tts": getattr(settings, "doubao_api_key", ""),
+                "openai_tts": getattr(settings, "openai_api_key", ""),
+                "minimax_tts": getattr(settings, "minimax_api_key", ""),
+            }
+            api_key = key_map.get(provider_config.provider_key, "")
 
-    extra_config = json.loads(provider_config.config_json) if provider_config.config_json else {}
+        extra_config = json.loads(provider_config.config_json) if provider_config.config_json else {}
 
-    try:
-        provider_type = ProviderType(provider_config.provider_type)
-        tts_provider = ProviderRegistry.instantiate(
-            provider_type=provider_type,
-            key=provider_config.provider_key,
-            api_key=api_key or "",
-            api_base_url=provider_config.api_base_url or "",
-            model_id=provider_config.model_id or "",
-            config=extra_config,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"TTS 提供商初始化失败: {e}")
+        try:
+            provider_type = ProviderType(provider_config.provider_type)
+            tts_provider = ProviderRegistry.instantiate(
+                provider_type=provider_type,
+                key=provider_config.provider_key,
+                api_key=api_key or "",
+                api_base_url=provider_config.api_base_url or "",
+                model_id=provider_config.model_id or "",
+                config=extra_config,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"TTS 提供商初始化失败: {e}")
 
     # Synthesize preview using the trained speaker_id
     from ..providers.tts.base import TTSRequest
@@ -343,10 +373,15 @@ async def preview_voice_clone(voice_id: str, db: AsyncSession = Depends(get_db))
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"preview_{voice_id[:8]}_{uuid.uuid4().hex[:6]}.mp3"
 
-    # Use speaker_id as voice_id; the provider will use ICL resource_id
+    # local_voxcpm 用参考音频绝对路径;其它用训练后的 speaker_id
+    if is_local:
+        ref = Path(voice.reference_audio_path)
+        preview_voice_id = str(ref if ref.is_absolute() else ref.resolve())
+    else:
+        preview_voice_id = voice.speaker_id
     request = TTSRequest(
         text=preview_text,
-        voice_id=voice.speaker_id,
+        voice_id=preview_voice_id,
         use_icl=True,
     )
 

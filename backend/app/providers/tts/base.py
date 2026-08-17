@@ -171,8 +171,13 @@ class TTSProvider(BaseProvider):
             })
         self._save_chunks_json(chunks_dir, chunks_meta, voice_id, use_icl)
 
-        # Concatenate all chunks
-        duration = await self._concat_audio(chunk_paths, output_path)
+        # Concatenate all chunks。本地 VoxCPM 走小分块抗漂移,块间补一小段静音
+        # 补齐句间停顿;其它 provider(豆包等)保持无缝拼接。
+        gap = 0.0
+        if getattr(self, "metadata", None) is not None and self.metadata.key == "local_voxcpm":
+            from ...config import get_settings
+            gap = get_settings().tts.local_voxcpm_chunk_gap_seconds
+        duration = await self._concat_audio(chunk_paths, output_path, gap_seconds=gap)
 
         return TTSResponse(
             file_path=output_path,
@@ -222,13 +227,57 @@ class TTSProvider(BaseProvider):
             return 0.0
 
     @staticmethod
-    async def _concat_audio(chunk_paths: list[Path], output_path: Path) -> float:
-        """Concatenate MP3 audio files using ffmpeg concat demuxer."""
-        concat_list = (output_path.parent / f"_concat_{uuid.uuid4().hex[:8]}.txt").resolve()
+    async def _probe_sample_rate(file_path: Path) -> int:
+        """Get audio sample rate via ffprobe (fallback 16000)."""
+        probe = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error", "-select_streams", "a:0",
+            "-show_entries", "stream=sample_rate", "-of", "csv=p=0",
+            str(file_path.resolve()),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await probe.communicate()
         try:
+            return int(stdout.decode().strip())
+        except (ValueError, AttributeError):
+            return 16000
+
+    @staticmethod
+    async def _concat_audio(chunk_paths: list[Path], output_path: Path,
+                            gap_seconds: float = 0.0) -> float:
+        """Concatenate MP3 audio files using ffmpeg concat demuxer.
+
+        gap_seconds>0 时在相邻块之间插入等长静音(与首块同采样率),用于本地
+        VoxCPM 小分块拼接时补齐句间停顿(避免相邻句子直接贴在一起)。
+        """
+        concat_list = (output_path.parent / f"_concat_{uuid.uuid4().hex[:8]}.txt").resolve()
+        silence_path: Path | None = None
+        files_to_concat: list[Path] = list(chunk_paths)
+        try:
+            if gap_seconds > 0 and len(chunk_paths) > 1:
+                sr = await TTSProvider._probe_sample_rate(chunk_paths[0])
+                silence_path = (output_path.parent / f"_gap_{uuid.uuid4().hex[:8]}.mp3").resolve()
+                sp = await asyncio.create_subprocess_exec(
+                    "ffmpeg", "-y", "-f", "lavfi",
+                    "-i", f"anullsrc=r={sr}:cl=mono", "-t", f"{gap_seconds}",
+                    "-c:a", "libmp3lame", "-q:a", "2", str(silence_path),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await sp.communicate()
+                if sp.returncode == 0 and silence_path.exists():
+                    interleaved: list[Path] = []
+                    for i, p in enumerate(chunk_paths):
+                        if i > 0:
+                            interleaved.append(silence_path)
+                        interleaved.append(p)
+                    files_to_concat = interleaved
+                else:
+                    silence_path = None  # 静音生成失败则退回无缝拼接
+
             # Write concat file list
             with open(concat_list, "w") as f:
-                for p in chunk_paths:
+                for p in files_to_concat:
                     # Use absolute path to avoid ffmpeg resolving relative to list file
                     safe = str(p.resolve()).replace("'", "'\\''")
                     f.write(f"file '{safe}'\n")
@@ -262,3 +311,5 @@ class TTSProvider(BaseProvider):
         finally:
             if concat_list.exists():
                 concat_list.unlink()
+            if silence_path and silence_path.exists():
+                silence_path.unlink()

@@ -26,7 +26,8 @@ export const voicesApi = {
 
   preview(id: string) {
     return apiClient.post<VoicePreviewResponse>(`/voices/${id}/preview`, null, {
-      timeout: 60000, // voice cloning preview may take a while
+      // 本地 VoxCPM(2B/MPS)在内存吃紧时合成较慢,放宽到 5 分钟避免前端先超时
+      timeout: 300000,
     })
   },
 

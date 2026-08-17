@@ -17,6 +17,7 @@ const audio = ref<AudioAsset | null>(null)
 const project = ref<Project | null>(null)
 const loading = ref(false)
 const cacheBuster = ref(Date.now())
+const ttsProgress = ref<{ done: number; total: number } | null>(null)
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
 // Chunk state
@@ -47,6 +48,7 @@ const voicesLoading = ref(false)
 const cloneDialogVisible = ref(false)
 const cloneForm = ref({
   name: '',
+  provider_key: 'doubao_tts',
   speaker_id: '',
   reference_text: '',
   is_default: false,
@@ -140,6 +142,12 @@ async function loadVoiceOptions() {
 onMounted(async () => {
   await Promise.all([fetchAudio(), fetchProject()])
   await Promise.all([loadVoiceOptions(), fetchChunks()])
+  // 进入页面时若语音合成已在进行中(如离开后又回来),自动接管轮询显示进度。
+  try {
+    const { data: steps } = await pipelineApi.getStatus(projectId.value)
+    const step = steps.find((s: any) => s.step_name === 'tts_audio')
+    if (step && step.status === 'in_progress') startTtsPolling()
+  } catch { /* ignore */ }
 })
 
 onUnmounted(() => {
@@ -165,6 +173,42 @@ async function saveVoiceSelection() {
   }
 }
 
+// 轮询合成状态 + 逐段进度(段落音频逐个落盘)。合成中(无论本次点击触发,
+// 还是进入页面时已在跑)都用它来实时展示"已完成 X/N 段"。
+function startTtsPolling() {
+  if (pollTimer) return  // 已在轮询
+  loading.value = true
+  pollTimer = setInterval(async () => {
+    try {
+      try {
+        const { data: prog } = await projectsApi.getTtsProgress(projectId.value)
+        ttsProgress.value = { done: prog.done, total: prog.total }
+      } catch { /* 进度接口失败不影响主轮询 */ }
+
+      const { data: steps } = await pipelineApi.getStatus(projectId.value)
+      const step = steps.find((s: any) => s.step_name === 'tts_audio')
+      if (!step) return
+
+      if (step.status === 'completed') {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+        await fetchAudio()
+        cacheBuster.value = Date.now()
+        loading.value = false
+        ttsProgress.value = null
+        await fetchChunks()
+        ElMessage.success('语音合成完成')
+      } else if (step.status === 'failed') {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+        loading.value = false
+        ttsProgress.value = null
+        ElMessage.error(step.error_message || '语音合成失败')
+      }
+    } catch {
+      // Ignore polling errors
+    }
+  }, 3000)
+}
+
 async function handleGenerateTTS() {
   // Save voice selection first
   await saveVoiceSelection()
@@ -173,30 +217,7 @@ async function handleGenerateTTS() {
   try {
     await pipelineApi.runStep(projectId.value, 'tts_audio')
     ElMessage.success('TTS 语音合成已启动，请稍候...')
-
-    // Poll pipeline step status (not asset status) to track real progress
-    pollTimer = setInterval(async () => {
-      try {
-        const { data: steps } = await pipelineApi.getStatus(projectId.value)
-        const step = steps.find((s: any) => s.step_name === 'tts_audio')
-        if (!step) return
-
-        if (step.status === 'completed') {
-          if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
-          await fetchAudio()
-          cacheBuster.value = Date.now()
-          loading.value = false
-          await fetchChunks()
-          ElMessage.success('语音合成完成')
-        } else if (step.status === 'failed') {
-          if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
-          loading.value = false
-          ElMessage.error(step.error_message || '语音合成失败')
-        }
-      } catch {
-        // Ignore polling errors
-      }
-    }, 3000)
+    startTtsPolling()
   } catch {
     ElMessage.error('启动失败')
     loading.value = false
@@ -205,7 +226,7 @@ async function handleGenerateTTS() {
 
 // Clone voice handlers
 function openCloneDialog() {
-  cloneForm.value = { name: '', speaker_id: '', reference_text: '', is_default: false }
+  cloneForm.value = { name: '', provider_key: 'doubao_tts', speaker_id: '', reference_text: '', is_default: false }
   cloneFile.value = null
   cloneDialogVisible.value = true
 }
@@ -219,7 +240,13 @@ async function handleCreateClone() {
     ElMessage.warning('请输入声音名称')
     return
   }
-  if (!cloneForm.value.speaker_id.trim()) {
+  const isLocal = cloneForm.value.provider_key === 'local_voxcpm'
+  if (isLocal) {
+    if (!cloneFile.value) {
+      ElMessage.warning('本地 VoxCPM 声音克隆需要上传参考音频样本')
+      return
+    }
+  } else if (!cloneForm.value.speaker_id.trim()) {
     ElMessage.warning('请输入火山引擎音色 ID (speaker_id)')
     return
   }
@@ -229,7 +256,7 @@ async function handleCreateClone() {
     const formData = new FormData()
     formData.append('name', cloneForm.value.name.trim())
     formData.append('speaker_id', cloneForm.value.speaker_id.trim())
-    formData.append('provider_key', 'doubao_tts')
+    formData.append('provider_key', cloneForm.value.provider_key)
     if (cloneFile.value) {
       formData.append('audio_file', cloneFile.value)
     }
@@ -240,7 +267,7 @@ async function handleCreateClone() {
 
     const { data } = await voicesApi.clone(formData)
     const statusInfo = getTrainingStatusTag(data.training_status)
-    const msg = cloneFile.value
+    const msg = (cloneFile.value && !isLocal)
       ? `声音 "${data.name}" 训练已提交（${statusInfo.text}）`
       : `声音 "${data.name}" 已添加（${statusInfo.text}）`
     ElMessage.success(msg)
@@ -399,6 +426,25 @@ async function handleConcatenate() {
       </div>
     </div>
 
+    <!-- 合成进度:段落音频逐个落盘,合成中实时展示"已完成 X/N 段" -->
+    <el-alert
+      v-if="loading && ttsProgress && ttsProgress.total > 0"
+      type="info"
+      :closable="false"
+      style="margin-bottom: 16px;"
+    >
+      <div style="display: flex; align-items: center; gap: 12px;">
+        <span style="white-space: nowrap; font-weight: 500;">
+          正在合成语音… 已完成 {{ ttsProgress.done }} / {{ ttsProgress.total }} 段
+        </span>
+        <el-progress
+          :percentage="Math.round((ttsProgress.done / ttsProgress.total) * 100)"
+          :stroke-width="12"
+          style="flex: 1;"
+        />
+      </div>
+    </el-alert>
+
     <!-- 声音设置 -->
     <el-card style="margin-bottom: 16px;">
       <template #header>
@@ -418,6 +464,7 @@ async function handleConcatenate() {
           style="width: 100%;"
           :loading="voicesLoading"
           filterable
+          @change="saveVoiceSelection"
         >
           <el-option
             v-for="v in presetVoices"
@@ -439,6 +486,7 @@ async function handleConcatenate() {
             placeholder="选择克隆声音"
             style="flex: 1;"
             :loading="voicesLoading"
+            @change="saveVoiceSelection"
           >
             <el-option
               v-for="v in clonedVoices"
@@ -588,13 +636,19 @@ async function handleConcatenate() {
         <el-form-item label="声音名称" required>
           <el-input v-model="cloneForm.name" placeholder="如：张老师的声音" />
         </el-form-item>
-        <el-form-item label="音色 ID" required>
+        <el-form-item label="克隆方式" required>
+          <el-radio-group v-model="cloneForm.provider_key">
+            <el-radio-button value="local_voxcpm">本地 VoxCPM（零样本·免训练）</el-radio-button>
+            <el-radio-button value="doubao_tts">豆包（云端训练）</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item v-if="cloneForm.provider_key === 'doubao_tts'" label="音色 ID" required>
           <el-input v-model="cloneForm.speaker_id" placeholder="如：S_xxxxxxx（从火山引擎控制台获取）" />
           <el-text size="small" type="info" style="margin-top: 4px; display: block;">
             需要在火山引擎控制台购买声音复刻服务后获取 speaker_id
           </el-text>
         </el-form-item>
-        <el-form-item label="参考音频">
+        <el-form-item label="参考音频" :required="cloneForm.provider_key === 'local_voxcpm'">
           <el-upload
             :auto-upload="false"
             :limit="1"
@@ -606,7 +660,9 @@ async function handleConcatenate() {
             </el-button>
             <template #tip>
               <div class="el-upload__tip">
-                可选。上传音频将调用火山引擎训练接口；不上传则直接使用已训练好的 speaker_id
+                {{ cloneForm.provider_key === 'local_voxcpm'
+                  ? '必填。上传该人声的干净样本（十几秒即可），本地零样本克隆、无需训练、即时可用。'
+                  : '可选。上传音频将调用火山引擎训练接口；不上传则直接使用已训练好的 speaker_id' }}
               </div>
             </template>
           </el-upload>

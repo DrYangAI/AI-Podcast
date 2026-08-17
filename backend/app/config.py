@@ -91,6 +91,11 @@ class ContentSettings(BaseSettings):
 class TTSSettings(BaseSettings):
     icl_max_chars: int = 300       # ICL 声音复刻模式每段最大字符数
     standard_max_chars: int = 2000  # 标准 TTS 每段最大字符数
+    # 本地 VoxCPM 0.5B 单次生成越长,后半段越容易漂移(越说越快、越来越响,
+    # 官方 issue #302 已知问题)。故本地额外压小分块,按句切分、每块都短而稳,
+    # 再拼接(块间补一小段静音)。仅对 local_voxcpm 生效,豆包等云端不受影响。
+    local_voxcpm_max_chars: int = 80
+    local_voxcpm_chunk_gap_seconds: float = 0.12  # 本地小块拼接时的句间静音
 
 
 class TaskSettings(BaseSettings):
