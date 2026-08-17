@@ -3,7 +3,7 @@
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile, File, Form
@@ -802,6 +802,61 @@ async def get_audio_chunks(project_id: str):
         voice_id=meta.get("voice_display", meta.get("voice_id", "")),
         use_icl=meta.get("use_icl", False),
     )
+
+
+@router.get("/{project_id}/audio/tts-progress")
+async def get_tts_progress(project_id: str, db: AsyncSession = Depends(get_db)):
+    """语音合成实时进度:数已逐段落盘的段落音频 / 总段落数。
+
+    段落音频在合成时就一段段写入 segments/seg_XXX/speech.mp3,前端可在合成
+    进行中轮询本接口显示"已完成 X/N 段",并逐个试听已完成段落。
+    """
+    settings = get_settings()
+
+    total_result = await db.execute(
+        select(func.count()).select_from(Segment).where(Segment.project_id == project_id)
+    )
+    total = total_result.scalar() or 0
+
+    step_result = await db.execute(
+        select(PipelineStep).where(
+            PipelineStep.project_id == project_id,
+            PipelineStep.step_name == "tts_audio",
+        )
+    )
+    step = step_result.scalar_one_or_none()
+    status = step.status if step else "pending"
+
+    # 只数【本次运行】新生成的段:段落音频在合成时逐个覆盖写入,重跑已完成的项目时
+    # 旧文件仍在盘上,若全数进去会瞬间显示 100%。用步骤 started_at(UTC)作分界,
+    # 只计 mtime ≥ started_at 的段(留 2s 容差)。started_at 缺失则回退为全数。
+    start_epoch = None
+    if step and step.started_at:
+        start_epoch = step.started_at.replace(tzinfo=timezone.utc).timestamp() - 2
+
+    seg_dir = Path(settings.storage.base_dir) / "audio" / project_id / "segments"
+    done_segments = []
+    if seg_dir.exists():
+        for d in sorted(seg_dir.iterdir()):
+            name = d.name
+            if not (name.startswith("seg_") and name[4:].isdigit()):
+                continue
+            speech = d / "speech.mp3"
+            if not speech.exists():
+                continue
+            if start_epoch is not None and speech.stat().st_mtime < start_epoch:
+                continue  # 上一次运行留下的旧文件,不计入本次进度
+            done_segments.append({
+                "order": int(name[4:]),
+                "url": f"/{settings.storage.base_dir}/audio/{project_id}/segments/{name}/speech.mp3",
+            })
+
+    return {
+        "total": total,
+        "done": len(done_segments),
+        "status": status,
+        "segments": done_segments,
+    }
 
 
 @router.post("/{project_id}/audio/chunks/{chunk_index}/regenerate", response_model=AudioChunkResponse)

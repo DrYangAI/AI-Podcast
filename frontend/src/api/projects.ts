@@ -109,6 +109,11 @@ export const projectsApi = {
   getAudioChunks(id: string) {
     return apiClient.get<any>(`/projects/${id}/audio/chunks`)
   },
+  getTtsProgress(id: string) {
+    return apiClient.get<{ total: number; done: number; status: string; segments: { order: number; url: string }[] }>(
+      `/projects/${id}/audio/tts-progress`
+    )
+  },
   regenerateAudioChunk(id: string, chunkIndex: number) {
     return apiClient.post<any>(`/projects/${id}/audio/chunks/${chunkIndex}/regenerate`)
   },
