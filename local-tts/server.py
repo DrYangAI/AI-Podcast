@@ -12,9 +12,11 @@
 import io
 import os
 import time
+import shutil
 import hashlib
 import logging
 import threading
+import subprocess
 
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 # 注意:torchaudio 2.x 的 load() 依赖 torchcodec,而 torchcodec 只支持到
@@ -115,10 +117,15 @@ def prepare_reference(ref_path: str, denoise: bool = True,
 
     model = get_model()
     t0 = time.time()
-    # 1) 裁剪到前 N 秒(16k 单声道)
-    y, _ = librosa.load(ref_path, sr=16000, mono=True, duration=ref_seconds)
+    # 1) 裁剪到前 N 秒(16k 单声道)。用 ffmpeg 解码而非 librosa/soundfile:
+    #    soundfile(libsndfile)读不了 m4a/aac,ffmpeg 则兼容 mp3/m4a/aac/wav/flac 等。
     trimmed = out + ".trim.wav"
-    sf.write(trimmed, y, 16000)
+    ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
+    subprocess.run(
+        [ffmpeg, "-y", "-loglevel", "error", "-i", ref_path,
+         "-t", str(ref_seconds), "-ar", "16000", "-ac", "1", trimmed],
+        check=True,
+    )
     # 2) 可选降噪(若加载了降噪器)
     if denoise and getattr(model, "denoiser", None) is not None:
         model.denoiser.enhance(trimmed, output_path=out)
