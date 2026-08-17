@@ -18,10 +18,10 @@ import time
 import logging
 
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
-# 解除 MPS 分配上限:2B 模型(float32)在 18GB Mac 上会顶到 MPS 天花板导致
-# OOM 崩溃(500)。设为 0.0 让超出部分走 swap——慢但不崩。内存吃紧时务必
-# 关掉其它大应用(Chrome/微信等),否则整机会很卡。
-os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
+# 【不要】设 PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0:实测它虽能避免 OOM(500),
+# 但会让 2B 在内存紧张时无上限吃 swap,把整机拖到卡死。保留 MPS 默认上限——
+# 内存不够时宁可报 500(可恢复)也不拖垮系统。
+# 正确用法:合成前关掉大应用(Chrome/微信/Clash),给 2B 腾出 ~16GB。
 
 import librosa
 import soundfile as sf
