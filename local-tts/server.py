@@ -84,21 +84,37 @@ def transcribe_reference(ref_path: str) -> str:
     return text
 
 
-def get_denoised_reference(ref_path: str) -> str:
-    """对参考音频降噪【一次】并缓存干净版(按路径)。之后合成用干净版 +
-    denoise=False,避免每次请求都重跑降噪器(那会固定加 ~150s)。"""
-    model = get_model()
-    if getattr(model, "denoiser", None) is None:
-        return ref_path
+REF_MAX_SECONDS = float(os.environ.get("VOXCPM_REF_SECONDS", "20"))
+
+
+def prepare_reference(ref_path: str) -> str:
+    """把参考音频裁到前 N 秒 + 降噪【一次】,落盘缓存。返回干净短参考的路径。
+
+    克隆不需要长参考:十几秒干净片段又快又好。而降噪耗时与音频长度成正比,
+    直接降噪一个 2 分钟的参考会卡十几分钟——裁到 20s 后只需 ~20s。
+    合成时用这个干净短参考 + denoise=False。
+    """
     key = hashlib.md5(ref_path.encode("utf-8")).hexdigest()[:12]
     out = os.path.join(DENOISE_CACHE_DIR, f"{key}.wav")
-    if os.path.exists(out):  # 磁盘缓存:重启后仍有效,不必重降噪
+    if os.path.exists(out):  # 磁盘缓存:重启后仍有效
         _denoised_cache[ref_path] = out
         return out
+
+    model = get_model()
     t0 = time.time()
-    model.denoiser.enhance(ref_path, output_path=out)
+    # 1) 裁剪到前 N 秒(16k 单声道)
+    y, _ = librosa.load(ref_path, sr=16000, mono=True, duration=REF_MAX_SECONDS)
+    trimmed = out + ".trim.wav"
+    sf.write(trimmed, y, 16000)
+    # 2) 降噪(若加载了降噪器)
+    if getattr(model, "denoiser", None) is not None:
+        model.denoiser.enhance(trimmed, output_path=out)
+        os.remove(trimmed)
+    else:
+        os.replace(trimmed, out)
     _denoised_cache[ref_path] = out
-    logger.info("Denoised reference (once) in %.1fs -> %s", time.time() - t0, out)
+    logger.info("Prepared reference (trim %.0fs + denoise) in %.1fs -> %s",
+                REF_MAX_SECONDS, time.time() - t0, out)
     return out
 
 
@@ -143,8 +159,8 @@ def tts(req: TTSRequest):
         raise HTTPException(status_code=400, detail="text 不能为空")
 
     model = get_model()
-    prompt_text = req.reference_text or transcribe_reference(req.reference_audio_path)
-    clean_ref = get_denoised_reference(req.reference_audio_path)  # 降噪一次并缓存
+    clean_ref = prepare_reference(req.reference_audio_path)  # 裁剪+降噪一次并缓存
+    prompt_text = req.reference_text or transcribe_reference(clean_ref)  # 转写干净短参考
 
     t0 = time.time()
     wav = model.generate(
