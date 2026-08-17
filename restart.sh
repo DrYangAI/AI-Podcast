@@ -8,8 +8,9 @@ PROJ_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKEND_PORT=9527
 FRONTEND_PORT=9528
 TTS_PORT=9530
-# 本地 VoxCPM TTS 服务较重(加载 2B 模型、约 8GB 内存、1-2 分钟)。
-# 不需要本地声音克隆时,用 SKIP_TTS=1 bash restart.sh 跳过。
+# 本地 VoxCPM(0.5B)TTS 服务。惰性加载:启动瞬间就绪,模型在【首个合成请求】
+# 时才加载(约 20-40s);空闲 10 分钟自动卸载释放内存(VOXCPM_IDLE_TIMEOUT)。
+# 完全不需要本地声音克隆时,用 SKIP_TTS=1 bash restart.sh 跳过启动。
 SKIP_TTS="${SKIP_TTS:-0}"
 
 GREEN='\033[0;32m'
@@ -66,7 +67,7 @@ FRONTEND_PID=$!
 TTS_PID=""
 if [ "$SKIP_TTS" != "1" ]; then
   if [ -x "$PROJ_DIR/local-tts/venv/bin/python" ]; then
-    log "启动本地 VoxCPM TTS 服务 (端口 $TTS_PORT, 加载模型约需 1-2 分钟) ..."
+    log "启动本地 VoxCPM TTS 服务 (端口 $TTS_PORT, 惰性加载:首次合成时才载入模型) ..."
     WARMUP="$PROJ_DIR/local-tts/ref_yangyisheng_18s.wav"
     [ -f "$WARMUP" ] && export VOXCPM_WARMUP_REF="$WARMUP"
     # torchaudio.load 依赖 torchcodec + ffmpeg@6 的库
@@ -128,7 +129,7 @@ elif [ -n "$TTS_PID" ]; then
   if curl -s -o /dev/null --max-time 2 http://localhost:$TTS_PORT/health 2>/dev/null; then
     log "本地 TTS 就绪  http://localhost:$TTS_PORT  (PID: $TTS_PID)"
   else
-    warn "本地 TTS 加载中(约 1-2 分钟);就绪前可先用豆包等其它 TTS"
+    warn "本地 TTS 启动中(惰性加载,首次合成时才载入模型);未就绪前可先用豆包等其它 TTS"
     warn "  就绪检查: curl http://localhost:$TTS_PORT/health   日志: local-tts/server.log"
   fi
   echo ""

@@ -43,9 +43,14 @@ WARMUP_REF = os.environ.get("VOXCPM_WARMUP_REF", "")
 # 加锁让并发请求排队(而非抢占),每个请求都在健康 RTF 下顺序完成。
 _gen_lock = threading.Lock()
 
+# 空闲自动卸载:常驻服务不合成时也占着模型内存(~数 GB)。空闲超过 IDLE_TIMEOUT
+# 秒就卸载模型释放内存,下次请求再惰性重新加载(首次约 20-40s)。0 = 禁用(一直常驻)。
+IDLE_TIMEOUT = float(os.environ.get("VOXCPM_IDLE_TIMEOUT", "600"))
+
 _model = None
 _sample_rate = None
 _whisper = None
+_last_activity = time.time()
 _transcript_cache: dict[str, str] = {}
 _denoised_cache: dict[str, str] = {}
 
@@ -76,6 +81,44 @@ def get_whisper():
         logger.info("Loading whisper '%s' for reference transcription ...", WHISPER_MODEL)
         _whisper = whisper.load_model(WHISPER_MODEL)
     return _whisper
+
+
+def unload_models():
+    """卸载模型释放内存(空闲时调用)。必须在持有 _gen_lock 时调用,避免与生成竞争。
+
+    只丢大模型(VoxCPM + whisper);转写/降噪缓存是小字符串和磁盘路径,保留以便
+    下次复用(不占显著内存)。
+    """
+    global _model, _sample_rate, _whisper
+    if _model is None and _whisper is None:
+        return
+    logger.info("空闲超过 %.0fs,卸载模型释放内存...", IDLE_TIMEOUT)
+    _model = None
+    _sample_rate = None
+    _whisper = None
+    try:
+        import gc
+        gc.collect()
+        import torch
+        if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+            torch.mps.empty_cache()
+    except Exception as e:  # 释放失败不致命
+        logger.warning("释放 MPS 缓存失败: %s", e)
+    logger.info("模型已卸载,内存已释放(下次请求会自动重新加载)。")
+
+
+def _idle_watcher():
+    """后台守护线程:空闲超时则卸载模型。"""
+    while True:
+        time.sleep(30)
+        if IDLE_TIMEOUT <= 0 or _model is None:
+            continue
+        if time.time() - _last_activity <= IDLE_TIMEOUT:
+            continue
+        # 拿到生成锁才卸载:确保没有正在进行的合成;拿到后二次确认仍空闲。
+        with _gen_lock:
+            if _model is not None and time.time() - _last_activity > IDLE_TIMEOUT:
+                unload_models()
 
 
 def transcribe_reference(ref_path: str) -> str:
@@ -155,10 +198,13 @@ app = FastAPI(title="VoxCPM-0.5B Local TTS")
 
 @app.on_event("startup")
 def _startup():
-    get_model()
-    get_whisper()
-    # 预热合成暂时禁用:在 uvicorn 启动上下文里跑 generate 会底层崩溃,
-    # 改为首个真实请求时再编译内核(慢一点但不崩)。
+    # 惰性加载:模型不在启动时加载,而在首个 /tts 请求时加载(避免闲置时白占内存)。
+    # 预热合成也禁用:在 uvicorn 启动上下文里跑 generate 会底层崩溃。
+    if IDLE_TIMEOUT > 0:
+        threading.Thread(target=_idle_watcher, daemon=True).start()
+        logger.info("空闲自动卸载已启用:%.0fs 无请求即释放模型内存。", IDLE_TIMEOUT)
+    else:
+        logger.info("空闲自动卸载已禁用(VOXCPM_IDLE_TIMEOUT=0),模型将常驻。")
 
 
 @app.get("/health")
@@ -169,6 +215,8 @@ def health():
         "sample_rate": _sample_rate,
         "device": "mps",
         "model": MODEL_ID,
+        "idle_timeout": IDLE_TIMEOUT,
+        "idle_seconds": round(time.time() - _last_activity, 1),
     }
 
 
@@ -180,13 +228,15 @@ def tts(req: TTSRequest):
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text 不能为空")
 
-    model = get_model()
+    global _last_activity
     # 全局串行:并发请求在此排队,避免多生成同时抢 MPS 导致雪崩(见 _gen_lock 注释)。
+    # 模型加载也放在锁内(惰性加载 / 空闲卸载后重载),避免与卸载线程竞争。
     wait0 = time.time()
     with _gen_lock:
         waited = time.time() - wait0
         if waited > 1.0:
             logger.info("tts: 等待生成锁 %.1fs(前面有请求在跑)", waited)
+        model = get_model()  # 惰性加载:首个请求或空闲卸载后在此重新加载(约 20-40s)
         clean_ref = prepare_reference(req.reference_audio_path,
                                       denoise=req.denoise_ref,
                                       ref_seconds=req.ref_seconds)  # 裁剪(可选降噪)一次并缓存
@@ -207,6 +257,7 @@ def tts(req: TTSRequest):
 
     gen = time.time() - t0
     dur = len(wav) / _sample_rate
+    _last_activity = time.time()  # 记录活动时间,空闲看门狗据此计时
     logger.info("tts: %d 字 -> %.1fs 音频, 用时 %.1fs, RTF=%.1f",
                 len(req.text), dur, gen, gen / max(dur, 0.01))
 

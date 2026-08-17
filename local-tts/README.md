@@ -51,9 +51,22 @@ bash local-tts/run.sh
 - `POST /tts` `{text, reference_audio_path, reference_text?, speed?, normalize?, timesteps?, cfg_value?}`
   → `audio/wav`(16kHz)。`reference_text` 不传则服务自动转写。
 
+## 内存管理:惰性加载 + 空闲自动卸载
+
+服务常驻不代表一直占内存:
+
+- **惰性加载**:启动瞬间就绪,模型在【首个 `/tts` 请求】时才加载(约 20-40s);
+- **空闲自动卸载**:`VOXCPM_IDLE_TIMEOUT` 秒(默认 600 = 10 分钟)无请求,自动卸载
+  模型并释放内存(含 `torch.mps.empty_cache()`),下次请求再自动重载。设 `0` 禁用、
+  让模型常驻。
+
+`GET /health` 会返回 `model_loaded`、`idle_timeout`、`idle_seconds`,可据此判断当前
+是否已加载。彻底不用时也可直接停服务:`lsof -ti:9530 | xargs kill`。
+
 ## 环境变量
 
 - `VOXCPM_MODEL_ID` 模型(默认 `OpenBMB/VoxCPM-0.5B`)
 - `VOXCPM_WHISPER` 转写模型(默认 `small`)
 - `VOXCPM_PORT` 端口(默认 9530)
+- `VOXCPM_IDLE_TIMEOUT` 空闲多少秒后卸载模型释放内存(默认 600;0 = 禁用、常驻)
 - `DYLD_FALLBACK_LIBRARY_PATH` 指向 `/opt/homebrew/opt/ffmpeg@6/lib`(run.sh 自动设)
