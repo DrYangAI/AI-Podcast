@@ -217,6 +217,9 @@ class AudioService:
                 voice_display = voice_id
 
             max_chunk = settings.tts.icl_max_chars if use_icl else settings.tts.standard_max_chars
+            # 本地 VoxCPM:压小分块以抗长文本漂移(越说越快/越响)。见 config 注释。
+            if provider_key_used == "local_voxcpm":
+                max_chunk = min(max_chunk, settings.tts.local_voxcpm_max_chars)
 
             # Check if segments have per-segment script_text
             seg_result = await db.execute(

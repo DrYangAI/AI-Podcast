@@ -84,6 +84,9 @@ providers:
 tts:
   icl_max_chars: 300
   standard_max_chars: 2000
+  # 本地 VoxCPM 抗漂移:按句小分块 + 句间静音(仅对 local_voxcpm 生效)
+  local_voxcpm_max_chars: 80
+  local_voxcpm_chunk_gap_seconds: 0.12
 
 ppt:
   # Optional explicit path to the LibreOffice `soffice` binary used to render
