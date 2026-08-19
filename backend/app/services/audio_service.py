@@ -70,6 +70,32 @@ def clean_script_for_tts(text: str) -> str:
     return text.strip()
 
 
+# chunks.json 里 intro/outro 分段不对应任何 Segment,做下标换算时要跳过。
+CHUNK_META_TYPES = ("intro", "outro")
+
+
+def chunk_segment_index(chunks: list[dict], chunk_index: int) -> int | None:
+    """chunks.json 下标 → segments(按 segment_order 排序)下标。
+
+    intro/outro 分段不对应段落,返回 None。
+    """
+    if chunks[chunk_index].get("type") in CHUNK_META_TYPES:
+        return None
+    return chunk_index - sum(
+        1 for c in chunks[:chunk_index] if c.get("type") in CHUNK_META_TYPES
+    )
+
+
+def chunks_align_with_segments(chunks: list[dict], segments: list) -> bool:
+    """分段是否与段落一一对应。
+
+    按段落合成时成立;旧的"整篇切块"模式下分段是按字数切的,和段落对不上,
+    此时不能拿分段下标去改段落文字。
+    """
+    body = [c for c in chunks if c.get("type") not in CHUNK_META_TYPES]
+    return bool(segments) and len(body) == len(segments)
+
+
 class AudioService:
     """Handles TTS audio generation and manual audio upload."""
 
@@ -488,13 +514,10 @@ class AudioService:
                 .order_by(Segment.segment_order)
             )
             segments = list(seg_result.scalars().all())
-            if segments and chunk.get("type") not in ("intro", "outro"):
-                # Calculate segment index by skipping intro/outro chunks
-                seg_index = chunk_index
-                for i in range(chunk_index):
-                    if chunks[i].get("type") in ("intro", "outro"):
-                        seg_index -= 1
-                if 0 <= seg_index < len(segments) and segments[seg_index].script_text:
+            aligned = chunks_align_with_segments(chunks, segments)
+            seg_index = chunk_segment_index(chunks, chunk_index) if aligned else None
+            if seg_index is not None and 0 <= seg_index < len(segments):
+                if segments[seg_index].script_text:
                     fresh_text = clean_script_for_tts(segments[seg_index].script_text)
                     if fresh_text != chunk["text"]:
                         logger.info("Chunk %d text updated from database (was %d chars, now %d chars)",
@@ -601,6 +624,7 @@ class AudioService:
         speed = len(chunk["text"]) / dur if dur > 0 else 0.0
         chunk["duration"] = dur
         chunk["speed"] = speed
+        chunk["stale"] = False  # 音频已按当前文字重生成
         chunks[chunk_index] = chunk
 
         # Save updated chunks.json (preserve display name, store real speaker_id)
@@ -608,26 +632,117 @@ class AudioService:
                                       voice_display=voice_display)
 
         # Sync back to segment if in per-segment mode
-        async with async_session_factory() as db:
-            seg_result = await db.execute(
-                select(Segment)
-                .where(Segment.project_id == project_id)
-                .order_by(Segment.segment_order)
-            )
-            segments = list(seg_result.scalars().all())
-            if segments and chunk_index < len(segments):
-                seg = segments[chunk_index]
-                if seg.script_text:
-                    # Copy regenerated audio back to segment dir
-                    seg_audio = Path(seg.audio_file) if seg.audio_file else None
-                    if seg_audio:
-                        import shutil as _shutil
-                        _shutil.copy2(chunk_path, seg_audio)
-                    seg.duration_hint = dur
-                    await db.commit()
-                    logger.info("Synced regenerated chunk %d back to segment", chunk_index)
+        if chunk.get("type") in CHUNK_META_TYPES:
+            # 片头/片尾没有对应段落,但视频合成会读 seg_intro/seg_outro 的时长,
+            # 这里也要覆盖,否则视频还按旧时长排版。
+            meta_audio = (Path(settings.storage.base_dir) / "audio" / project_id
+                          / "segments" / f"seg_{chunk['type']}" / "speech.mp3")
+            if meta_audio.exists():
+                import shutil as _shutil
+                _shutil.copy2(chunk_path, meta_audio)
+                logger.info("Synced regenerated %s chunk back to %s", chunk["type"], meta_audio.name)
+        else:
+            async with async_session_factory() as db:
+                seg_result = await db.execute(
+                    select(Segment)
+                    .where(Segment.project_id == project_id)
+                    .order_by(Segment.segment_order)
+                )
+                segments = list(seg_result.scalars().all())
+                seg_index = (chunk_segment_index(chunks, chunk_index)
+                             if chunks_align_with_segments(chunks, segments) else None)
+                if seg_index is not None and 0 <= seg_index < len(segments):
+                    seg = segments[seg_index]
+                    if seg.script_text:
+                        # Copy regenerated audio back to segment dir
+                        seg_audio = Path(seg.audio_file) if seg.audio_file else None
+                        if seg_audio:
+                            import shutil as _shutil
+                            _shutil.copy2(chunk_path, seg_audio)
+                        seg.duration_hint = dur
+                        await db.commit()
+                        logger.info("Synced regenerated chunk %d back to segment %d",
+                                    chunk_index, seg_index)
 
         return chunk
+
+    async def update_chunk_text(self, project_id: str, chunk_index: int, text: str) -> dict:
+        """改写单个分段的文字,并同步回口播稿。
+
+        音频分段和口播稿是同一份内容的两个视图,所以一次改三处:chunks.json
+        (TTS 实际要念的文本)、Segment.script_text、Script.content(整篇口播稿)。
+        分段音频此时还是旧文字生成的,标记 ``stale``,待用户点"重新生成"。
+        """
+        settings = get_settings()
+        chunks_dir = Path(settings.storage.base_dir) / "audio" / project_id / "chunks"
+
+        meta = TTSProvider.load_chunks_json(chunks_dir)
+        if not meta:
+            raise ValueError("No chunks found for this project")
+
+        chunks = meta["chunks"]
+        if chunk_index < 0 or chunk_index >= len(chunks):
+            raise ValueError(f"Chunk index {chunk_index} out of range (0-{len(chunks)-1})")
+
+        raw_text = (text or "").strip()
+        if not raw_text:
+            raise ValueError("分段文字不能为空")
+        clean_text = clean_script_for_tts(raw_text)
+        if not clean_text:
+            raise ValueError("分段文字清洗后为空,请检查内容")
+
+        chunk = chunks[chunk_index]
+        chunk_type = chunk.get("type")
+        script_synced = False
+
+        async with async_session_factory() as db:
+            if chunk_type in CHUNK_META_TYPES:
+                project = await db.get(Project, project_id)
+                if project:
+                    setattr(project, f"{chunk_type}_text", raw_text)
+                    script_synced = True
+            else:
+                seg_result = await db.execute(
+                    select(Segment)
+                    .where(Segment.project_id == project_id)
+                    .order_by(Segment.segment_order)
+                )
+                segments = list(seg_result.scalars().all())
+                seg_index = (chunk_segment_index(chunks, chunk_index)
+                             if chunks_align_with_segments(chunks, segments) else None)
+                if seg_index is not None and 0 <= seg_index < len(segments):
+                    segments[seg_index].script_text = raw_text
+                    # 整篇口播稿由各段拼回,和 script_service 里的做法保持一致
+                    full_script = "\n\n".join(
+                        s.script_text for s in segments if s.script_text
+                    )
+                    script_result = await db.execute(
+                        select(Script).where(Script.project_id == project_id)
+                    )
+                    script = script_result.scalar_one_or_none()
+                    if script:
+                        script.content = full_script
+                        script.is_manual = True
+                        script.version += 1
+                    script_synced = True
+            await db.commit()
+
+        if not script_synced:
+            logger.warning("Chunk %d text updated but not synced to script "
+                           "(分段与段落不一一对应)", chunk_index)
+
+        chunk["text"] = clean_text
+        chunk["chars"] = len(clean_text)
+        chunk["stale"] = True  # 文字已改,现有音频还是旧的
+        chunks[chunk_index] = chunk
+        TTSProvider._save_chunks_json(
+            chunks_dir, chunks, meta.get("voice_id", ""), meta.get("use_icl", False),
+            voice_display=meta.get("voice_display", ""),
+        )
+        logger.info("Chunk %d text updated (%d chars, script_synced=%s)",
+                    chunk_index, len(clean_text), script_synced)
+
+        return {**chunk, "script_synced": script_synced}
 
     async def concatenate_chunks(self, project_id: str) -> dict:
         """Re-concatenate all persisted chunks into final audio."""

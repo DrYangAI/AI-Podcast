@@ -298,12 +298,22 @@ class AudioChunkResponse(BaseModel):
     duration: float
     speed: float       # chars per second
     chars: int
+    stale: bool = False  # 文字已改但音频还没重新生成
 
 
 class AudioChunksListResponse(BaseModel):
     chunks: list[AudioChunkResponse]
     voice_id: str
     use_icl: bool
+
+
+class AudioChunkTextUpdate(BaseModel):
+    text: str
+
+
+class AudioChunkUpdateResponse(AudioChunkResponse):
+    # 分段与段落一一对应时才能回写口播稿;旧的整篇切块项目会是 False
+    script_synced: bool = True
 
 
 class VideoOutputResponse(BaseModel):
