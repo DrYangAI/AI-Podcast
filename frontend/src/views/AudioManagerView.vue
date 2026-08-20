@@ -669,12 +669,12 @@ async function handleConcatenate() {
 
             <!-- 展示态:点文字即可编辑 -->
             <template v-else>
+              <!-- 整段展开显示,方便通读校对;点一下就地编辑 -->
               <div
-                style="font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: text;"
-                :title="chunk.text"
+                style="font-size: 13px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; cursor: text;"
                 @click="startEditChunk(chunk)"
               >
-                {{ chunk.text.substring(0, 50) }}{{ chunk.text.length > 50 ? '...' : '' }}
+                {{ chunk.text }}
               </div>
               <div style="font-size: 11px; color: var(--el-text-color-secondary); margin-top: 2px;">
                 {{ chunk.chars }}字 | {{ formatDuration(chunk.duration) }} | {{ chunk.speed.toFixed(1) }}字/秒
