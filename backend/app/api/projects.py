@@ -20,6 +20,7 @@ from ..schemas.project import (
     SegmentResponse, SegmentUpdate, SegmentCreate, ImageAssetResponse, ImageRegenerateRequest,
     ScriptResponse, ScriptUpdate, AudioAssetResponse, VideoOutputResponse,
     PaginatedResponse, AudioChunkResponse, AudioChunksListResponse,
+    AudioChunkTextUpdate, AudioChunkUpdateResponse,
 )
 from ..schemas.publish import (
     PublishAssetResponse, PublishAssetUpdate,
@@ -751,6 +752,9 @@ async def update_script(project_id: str, data: ScriptUpdate, db: AsyncSession = 
                         continue
                     if seg_idx < len(script_parts):
                         clean_text = clean_script_for_tts(script_parts[seg_idx])
+                        if clean_text != chunk.get("text"):
+                            # 文字变了但音频还是旧的,标脏让音频页提示"待重新生成"
+                            chunk["stale"] = True
                         chunk["text"] = clean_text
                         chunk["chars"] = len(clean_text)
                     seg_idx += 1
@@ -795,6 +799,7 @@ async def get_audio_chunks(project_id: str):
             duration=c.get("duration", 0),
             speed=c.get("speed", 0),
             chars=c.get("chars", len(c["text"])),
+            stale=c.get("stale", False),
         ))
 
     return AudioChunksListResponse(
@@ -879,6 +884,32 @@ async def regenerate_audio_chunk(project_id: str, chunk_index: int):
         duration=chunk.get("duration", 0),
         speed=chunk.get("speed", 0),
         chars=chunk.get("chars", len(chunk["text"])),
+        stale=chunk.get("stale", False),
+    )
+
+
+@router.put("/{project_id}/audio/chunks/{chunk_index}/text", response_model=AudioChunkUpdateResponse)
+async def update_audio_chunk_text(project_id: str, chunk_index: int, data: AudioChunkTextUpdate):
+    """直接改写某个分段的文字,并同步回口播稿(段落 + 整篇)。"""
+    from ..services.audio_service import AudioService
+    service = AudioService()
+    try:
+        chunk = await service.update_chunk_text(project_id, chunk_index, data.text)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    settings = get_settings()
+    chunks_base = f"{settings.storage.base_dir}/audio/{project_id}/chunks"
+    return AudioChunkUpdateResponse(
+        index=chunk["index"],
+        text=chunk["text"],
+        file=chunk["file"],
+        file_url=f"/{chunks_base}/{chunk['file']}",
+        duration=chunk.get("duration", 0),
+        speed=chunk.get("speed", 0),
+        chars=chunk.get("chars", len(chunk["text"])),
+        stale=chunk.get("stale", False),
+        script_synced=chunk.get("script_synced", True),
     )
 
 

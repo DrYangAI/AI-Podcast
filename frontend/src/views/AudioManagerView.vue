@@ -29,11 +29,17 @@ interface AudioChunk {
   duration: number
   speed: number
   chars: number
+  stale?: boolean          // 文字已改但音频还没重新生成
+  script_synced?: boolean  // 保存文字时是否成功同步到口播稿
 }
 const chunks = ref<AudioChunk[]>([])
 const chunksLoaded = ref(false)
 const chunkRegenerating = ref<number | null>(null)  // index of chunk being regenerated
 const concatenating = ref(false)
+// 直接在分段里改文字:一次只允许编辑一段,避免多处未保存的改动互相覆盖
+const editingIndex = ref<number | null>(null)
+const editingText = ref('')
+const savingChunkText = ref(false)
 
 // Voice selection state
 const voiceMode = ref<'preset' | 'cloned'>('preset')
@@ -397,6 +403,49 @@ async function handleRegenerateChunk(index: number) {
   }
 }
 
+function startEditChunk(chunk: AudioChunk) {
+  if (editingIndex.value !== null && editingIndex.value !== chunk.index) {
+    ElMessage.warning(`分段 ${editingIndex.value + 1} 还在编辑中，请先保存或取消`)
+    return
+  }
+  editingIndex.value = chunk.index
+  editingText.value = chunk.text
+}
+
+function cancelEditChunk() {
+  editingIndex.value = null
+  editingText.value = ''
+}
+
+// 保存分段文字。后端会同步写回段落 script_text 和整篇口播稿,
+// 所以口播稿 tab 下次打开就是改过的内容。
+async function saveChunkText(index: number, regenerate = false) {
+  const text = editingText.value.trim()
+  if (!text) {
+    ElMessage.warning('分段文字不能为空')
+    return
+  }
+  savingChunkText.value = true
+  try {
+    const { data } = await projectsApi.updateAudioChunkText(projectId.value, index, text)
+    chunks.value[index] = data
+    editingIndex.value = null
+    editingText.value = ''
+    if (data.script_synced === false) {
+      ElMessage.warning('文字已保存，但本项目的分段与段落不是一一对应，未能同步到口播稿')
+    } else {
+      ElMessage.success('文字已保存，口播稿已同步')
+    }
+    if (regenerate) {
+      await handleRegenerateChunk(index)
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '保存文字失败')
+  } finally {
+    savingChunkText.value = false
+  }
+}
+
 async function handleConcatenate() {
   concatenating.value = true
   try {
@@ -586,40 +635,95 @@ async function handleConcatenate() {
       </template>
 
       <el-text size="small" type="info" style="display: block; margin-bottom: 12px;">
-        试听每个分段，有问题的点"重新生成"，确认都满意后点"重新拼接"更新完整音频
+        试听每个分段，文字有问题的点"编辑"直接改（会同步更新口播稿），改完点"保存并重新生成"，
+        确认都满意后点"重新拼接"更新完整音频
       </el-text>
 
       <div
         v-for="chunk in chunks"
         :key="chunk.index"
         style="padding: 8px 0; border-bottom: 1px solid var(--el-border-color-lighter);"
-        :style="chunkSpeedDeviation(chunk) > 0.3 ? { background: 'var(--el-color-warning-light-9)' } : {}"
+        :style="chunk.stale
+          ? { background: 'var(--el-color-danger-light-9)' }
+          : (chunkSpeedDeviation(chunk) > 0.3 ? { background: 'var(--el-color-warning-light-9)' } : {})"
       >
-        <div style="display: flex; align-items: center; gap: 8px;">
-          <el-tag size="small" :type="chunkSpeedDeviation(chunk) > 0.3 ? 'warning' : 'info'" style="min-width: 28px; text-align: center;">
+        <div style="display: flex; align-items: flex-start; gap: 8px;">
+          <el-tag size="small" :type="chunkSpeedDeviation(chunk) > 0.3 ? 'warning' : 'info'" style="min-width: 28px; text-align: center; margin-top: 2px;">
             {{ chunk.index + 1 }}
           </el-tag>
 
           <div style="flex: 1; min-width: 0;">
-            <div style="font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-              {{ chunk.text.substring(0, 50) }}{{ chunk.text.length > 50 ? '...' : '' }}
-            </div>
-            <div style="font-size: 11px; color: var(--el-text-color-secondary); margin-top: 2px;">
-              {{ chunk.chars }}字 | {{ formatDuration(chunk.duration) }} | {{ chunk.speed.toFixed(1) }}字/秒
-              <el-tag v-if="chunkSpeedDeviation(chunk) > 0.3" size="small" type="warning" style="margin-left: 4px;">
-                语速异常
-              </el-tag>
-            </div>
+            <!-- 编辑态:直接改这一段的文字 -->
+            <template v-if="editingIndex === chunk.index">
+              <el-input
+                v-model="editingText"
+                type="textarea"
+                :autosize="{ minRows: 2, maxRows: 12 }"
+                style="font-size: 13px;"
+                placeholder="这一段要念的文字"
+              />
+              <div style="font-size: 11px; color: var(--el-text-color-secondary); margin-top: 4px;">
+                {{ editingText.trim().length }}字 | 保存后会同步更新口播稿的对应段落
+              </div>
+            </template>
+
+            <!-- 展示态:点文字即可编辑 -->
+            <template v-else>
+              <!-- 整段展开显示,方便通读校对;点一下就地编辑 -->
+              <div
+                style="font-size: 13px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; cursor: text;"
+                @click="startEditChunk(chunk)"
+              >
+                {{ chunk.text }}
+              </div>
+              <div style="font-size: 11px; color: var(--el-text-color-secondary); margin-top: 2px;">
+                {{ chunk.chars }}字 | {{ formatDuration(chunk.duration) }} | {{ chunk.speed.toFixed(1) }}字/秒
+                <el-tag v-if="chunk.stale" size="small" type="danger" style="margin-left: 4px;">
+                  文字已改，待重新生成
+                </el-tag>
+                <el-tag v-if="chunkSpeedDeviation(chunk) > 0.3" size="small" type="warning" style="margin-left: 4px;">
+                  语速异常
+                </el-tag>
+              </div>
+            </template>
           </div>
 
-          <el-button
-            size="small"
-            @click="handleRegenerateChunk(chunk.index)"
-            :loading="chunkRegenerating === chunk.index"
-            :disabled="chunkRegenerating !== null && chunkRegenerating !== chunk.index"
-          >
-            重新生成
-          </el-button>
+          <div style="display: flex; gap: 6px; flex-shrink: 0;">
+            <template v-if="editingIndex === chunk.index">
+              <el-button size="small" @click="cancelEditChunk" :disabled="savingChunkText">
+                取消
+              </el-button>
+              <el-button size="small" @click="saveChunkText(chunk.index, false)" :loading="savingChunkText">
+                保存
+              </el-button>
+              <el-button
+                size="small"
+                type="primary"
+                @click="saveChunkText(chunk.index, true)"
+                :loading="savingChunkText || chunkRegenerating === chunk.index"
+              >
+                保存并重新生成
+              </el-button>
+            </template>
+            <template v-else>
+              <el-button
+                size="small"
+                @click="startEditChunk(chunk)"
+                :disabled="chunkRegenerating !== null"
+              >
+                编辑
+              </el-button>
+              <el-button
+                size="small"
+                :type="chunk.stale ? 'primary' : ''"
+                @click="handleRegenerateChunk(chunk.index)"
+                :loading="chunkRegenerating === chunk.index"
+                :disabled="chunkRegenerating !== null && chunkRegenerating !== chunk.index"
+              >
+                重新生成
+              </el-button>
+            </template>
+          </div>
         </div>
         <audio
           controls
