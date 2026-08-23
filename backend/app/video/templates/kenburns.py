@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from ..subtitle_renderer import SUBTITLE_SIDE_MARGIN
 from .base_template import BaseVideoTemplate, VideoSpec
 
 
@@ -50,9 +51,14 @@ class KenBurnsTemplate(BaseVideoTemplate):
             oc = s.get("outline_colour", "&H00000000")
             ow = s.get("outline_width", 1)
             mv = s.get("margin_v", 30)
+            rw, rh = spec.resolution
             filter_parts.append(
                 f"[{final_label}]subtitles='{safe_path}':force_style="
-                f"'FontSize={fs},PrimaryColour={pc},OutlineColour={oc},Outline={ow},MarginV={mv}'[final]"
+                f"'FontSize={fs},PrimaryColour={pc},OutlineColour={oc},Outline={ow},MarginV={mv},"
+                # 和竖屏一致:留出左右边距并开启智能折行,字号调大时
+                # 太长的句子在画面内折行,而不是横着顶出去被裁掉
+                f"WrapStyle=0,MarginL={SUBTITLE_SIDE_MARGIN},MarginR={SUBTITLE_SIDE_MARGIN},"
+                f"PlayResX={rw},PlayResY={rh}'" "[final]"
             )
             final_label = "final"
 

@@ -12,6 +12,25 @@ class SubtitleEntry:
     text: str
 
 
+# 字幕左右留白。既是 chars_per_line 的算账依据,也是 ffmpeg force_style 里的
+# MarginL/MarginR —— 两者必须是同一个数,否则算出的字数和 libass 的折行宽度对不上。
+SUBTITLE_SIDE_MARGIN = 40
+
+
+def chars_per_line(font_size: int, frame_width: int,
+                   side_margin: int = SUBTITLE_SIDE_MARGIN) -> int:
+    """一行放得下多少个中文字。
+
+    中文是等宽方块字,一个字约占 font_size 像素宽,所以可用宽度除以字号就是每行
+    字数。字号变大时每行字数必须跟着变少,否则字幕会顶出画面 —— 原先这里写死
+    20 字,字号调到 54 时 20×54=1080 已经正好铺满整幅竖屏,再大就溢出了。
+
+    混排数字/英文时实际能放下更多(半角窄),所以这个估算偏保守,宁可留白。
+    """
+    usable = max(frame_width - side_margin * 2, font_size)
+    return max(4, usable // max(font_size, 1))
+
+
 class SubtitleRenderer:
     """Generate SRT files from script segments and timing data."""
 

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile, File, Form
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -42,6 +42,11 @@ PORTRAIT_SETTING_FIELDS = tuple(
 )
 
 
+def _escape_like(term: str) -> str:
+    """转义 LIKE 的通配符,让用户输入的 % _ \\ 按字面匹配。"""
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _resolve_portrait_settings(
     data: ProjectCreate, defaults: dict[str, object]
 ) -> dict[str, object]:
@@ -56,12 +61,20 @@ async def list_projects(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     status: str | None = None,
+    search: str | None = Query(None, max_length=200),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all projects with pagination."""
+    """List all projects with pagination, optionally filtered by a title/topic keyword."""
     query = select(Project).order_by(Project.created_at.desc())
     if status:
         query = query.where(Project.status == status)
+    if search and search.strip():
+        # 标题和话题都搜,中文没有大小写之分,英文用 ilike 顺带不区分大小写
+        pattern = f"%{_escape_like(search.strip())}%"
+        query = query.where(or_(
+            Project.title.ilike(pattern, escape="\\"),
+            Project.topic.ilike(pattern, escape="\\"),
+        ))
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
@@ -512,7 +525,11 @@ async def update_segment(project_id: str, segment_id: str, data: SegmentUpdate,
 @router.delete("/{project_id}/segments/{segment_id}")
 async def delete_segment(project_id: str, segment_id: str,
                          db: AsyncSession = Depends(get_db)):
-    """Delete a segment (and its image, via cascade), then close the gap in ordering."""
+    """Delete a segment along with everything derived from it.
+
+    段落删掉之后,它在整篇口播稿里的那一段、音频分段(chunks.json + mp3)和拼好的
+    整段语音也要一起去掉,否则视频里还会念到已删的内容。图片走 cascade。
+    """
     result = await db.execute(
         select(Segment).where(Segment.id == segment_id, Segment.project_id == project_id)
     )
@@ -521,6 +538,11 @@ async def delete_segment(project_id: str, segment_id: str,
         raise HTTPException(status_code=404, detail="Segment not found")
 
     removed_order = segment.segment_order
+    count_result = await db.execute(
+        select(func.count()).select_from(Segment).where(Segment.project_id == project_id)
+    )
+    previous_count = count_result.scalar() or 0
+
     await db.delete(segment)
     await db.flush()
 
@@ -535,7 +557,18 @@ async def delete_segment(project_id: str, segment_id: str,
         seg.segment_order -= 1
         await db.flush()
 
-    return {"status": "ok"}
+    from ..services.audio_service import sync_after_segment_removed
+    try:
+        sync = await sync_after_segment_removed(db, project_id, removed_order, previous_count)
+    except Exception:
+        # 段落本身已经删掉了,同步没做完不该让整个删除失败。口播稿的写入在
+        # sync 的最前面,能走到这里说明它要么没执行、要么已经成功但后续炸了 ——
+        # 两种都不能断言"没动它",所以报 None(未知),别让前端说反话。
+        logger.exception("Failed to sync script/audio after deleting segment")
+        sync = {"script_synced": None, "chunks_synced": False, "audio_duration": None}
+    await db.flush()
+
+    return {"status": "ok", **sync}
 
 
 @router.post("/{project_id}/segments/{segment_id}/script/regenerate", response_model=SegmentResponse)

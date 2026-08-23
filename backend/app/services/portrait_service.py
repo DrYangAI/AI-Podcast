@@ -25,9 +25,9 @@ from ..database import async_session_factory
 from ..models import Project, Segment, Script, AudioAsset, VideoOutput
 from ..config import get_settings
 from ..video.ffmpeg_builder import FFmpegBuilder
-from ..video.subtitle_renderer import SubtitleRenderer
+from ..video.subtitle_renderer import SubtitleRenderer, chars_per_line, SUBTITLE_SIDE_MARGIN
 from ..video.composer import calculate_segment_durations, _hex_color_to_ass
-from .audio_service import clean_script_for_tts
+from .audio_service import clean_script_for_tts, uses_per_segment_tts
 
 logger = logging.getLogger(__name__)
 
@@ -355,6 +355,11 @@ class PortraitCompositeService:
                 f"OutlineColour={oc},"
                 f"Outline={outline_width},"
                 f"MarginV={subtitle_margin_v},"
+                # WrapStyle=0 是 libass 的智能折行(两行尽量等长);配上左右留白,
+                # 太长的句子会在画面内折成多行,而不是横着顶出去被裁掉。
+                f"WrapStyle=0,"
+                f"MarginL={SUBTITLE_SIDE_MARGIN},"
+                f"MarginR={SUBTITLE_SIDE_MARGIN},"
                 f"Alignment=2,"
                 f"PlayResX={PORTRAIT_WIDTH},"
                 f"PlayResY={PORTRAIT_HEIGHT}'"
@@ -388,6 +393,50 @@ class PortraitCompositeService:
         ])
         return args
 
+    async def _spoken_texts(self, db, project_id: str) -> list[str]:
+        """TTS 实际念出来的文字,按播放顺序:片头 + 各段口播稿 + 片尾。
+
+        和 audio_service 合成语音时的顺序一致,这样才能拿它去对齐 ASR 的时间轴。
+        段落没有单独口播稿时退回整篇稿子按段切分。
+        """
+        project = await db.get(Project, project_id)
+        result = await db.execute(
+            select(Segment)
+            .where(Segment.project_id == project_id)
+            .order_by(Segment.segment_order)
+        )
+        segments = list(result.scalars().all())
+        if not segments:
+            return []
+
+        # 判断口径必须和 audio_service 合成语音时一致,否则参考文本和音频对不上,
+        # 对齐命中率跌破阈值就静默退回原始识别文本(同音词错误照旧)
+        per_segment = uses_per_segment_tts(project, segments)
+        if per_segment:
+            body = [s.script_text or "" for s in segments]
+        else:
+            result = await db.execute(
+                select(Script).where(Script.project_id == project_id)
+            )
+            script = result.scalar_one_or_none()
+            from .video_service import _split_script_to_paragraphs
+            paragraphs = _split_script_to_paragraphs(script, len(segments)) if script else None
+            body = paragraphs[:len(segments)] if paragraphs else [s.content for s in segments]
+
+        # 片头/片尾只有逐段模式才会被合成进 speech.mp3(见 audio_service),
+        # 整篇模式下音频里根本没有,算进参考文本只会凭空多出一段对不上的字。
+        texts = []
+        intro = getattr(project, "intro_text", None) if project else None
+        if per_segment and intro and intro.strip():
+            texts.append(intro)
+        texts.extend(body)
+        outro = getattr(project, "outro_text", None) if project else None
+        if per_segment and outro and outro.strip():
+            texts.append(outro)
+
+        cleaned = [clean_script_for_tts(t or "") for t in texts]
+        return [t for t in cleaned if t.strip()]
+
     async def _generate_srt(self, project_id: str, settings) -> Path | None:
         """Generate SRT file for portrait subtitles.
 
@@ -405,12 +454,28 @@ class PortraitCompositeService:
             srt_dir.mkdir(parents=True, exist_ok=True)
             srt_path = srt_dir / "portrait_subtitles.srt"
 
-            # Try ASR-based precise subtitles
+            # 每行字数按字号算,不能写死:字号越大一行放得下的字越少。再乘上允许
+            # 的行数作为单条字幕的上限,超出的部分交给 libass 自动折行(见
+            # _build_ffmpeg_command 里的 WrapStyle)。
+            project = await db.get(Project, project_id)
+            font_size = getattr(project, "portrait_subtitle_font_size", 38) if project else 38
+            per_line = chars_per_line(font_size, PORTRAIT_WIDTH, SUBTITLE_SIDE_MARGIN)
+            max_lines = max(1, settings.subtitles.max_lines)
+            # 留 2 个字的余量:切行时会把句末标点收进本行(见 asr_service._line_ranges),
+            # 不预留的话这一两个标点会把整条挤到多出一行,末行只剩一个句号。
+            chunk_chars = max(per_line, per_line * max_lines - 2)
+
+            # Try ASR-based precise subtitles.
+            # 字幕文字用口播稿(TTS 念的原文),ASR 只提供时间轴 —— 否则 Whisper
+            # 的同音词错误(骨龄→古灵)会直接烧进成片。见 asr_service 模块说明。
+            spoken_texts = await self._spoken_texts(db, project_id)
+
             from .asr_service import transcribe_and_generate_srt
             asr_result = await transcribe_and_generate_srt(
                 audio_path=Path(audio.file_path),
                 output_path=srt_path,
-                max_chars_per_line=settings.subtitles.max_chars_per_line,
+                max_chars_per_line=chunk_chars,
+                reference_texts=spoken_texts,
             )
             if asr_result:
                 return asr_result
@@ -448,7 +513,7 @@ class PortraitCompositeService:
                 segments=segment_texts,
                 durations=durations,
                 output_path=srt_path,
-                max_chars_per_line=settings.subtitles.max_chars_per_line,
-                max_lines=settings.subtitles.max_lines,
+                max_chars_per_line=per_line,
+                max_lines=max_lines,
             )
             return srt_path

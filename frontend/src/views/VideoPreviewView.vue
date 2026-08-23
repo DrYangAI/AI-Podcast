@@ -104,6 +104,33 @@ const previewTitleText = computed(() =>
   portraitSettings.portrait_title_text || store.currentProject?.title || '项目标题'
 )
 
+const previewSubTitleText = computed(() =>
+  portraitSettings.portrait_sub_title_text?.trim() || ''
+)
+
+// 字幕示例句子取真实长度(一句口播稿的量级),这样调字号时能直接看出会折几行
+const previewSubtitleSample = '这些判断都基于一个前提，骨头应该匀速成熟，一年长一岁。'
+
+// 背景条为非矩形时，后端走 Pillow overlay(title_overlay.py)：主副标题被画进
+// 同一个形状里，副标题紧跟主标题下方，portrait_sub_title_y 完全不起作用。
+// 预览必须跟着这么排，否则副标题会按自己的 Y 跑到主标题上面，和成片对不上。
+const titleOverlayMode = computed(() =>
+  portraitSettings.portrait_title_bg_enabled &&
+  portraitSettings.portrait_title_bg_shape !== 'rect'
+)
+
+// 兼容 #RGB 简写；认不出来的值（空串、rgba(...) 等）原样返回，
+// 总比拼出 rgba(NaN,NaN,NaN) 让浏览器整条丢弃、预览里底条凭空消失强
+function hexToRgba(hex: string, alpha: number): string {
+  let h = (hex || '').trim().replace('#', '')
+  if (h.length === 3) h = h.split('').map(c => c + c).join('')
+  if (!/^[0-9a-fA-F]{6}$/.test(h)) return hex
+  const r = parseInt(h.slice(0, 2), 16)
+  const g = parseInt(h.slice(2, 4), 16)
+  const b = parseInt(h.slice(4, 6), 16)
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`
+}
+
 const previewStyles = computed(() => {
   const s = PREVIEW_SCALE
   const ps = portraitSettings
@@ -124,18 +151,21 @@ const previewStyles = computed(() => {
 
   // Title background decoration (applied as inline background on title text)
   const isParallelogram = ps.portrait_title_bg_shape === 'parallelogram'
+  const skew = ps.portrait_title_bg_enabled && isParallelogram ? ps.portrait_title_bg_skew : 0
   const titleBgInline: Record<string, string> = {}
   if (ps.portrait_title_bg_enabled) {
     const pad = Math.max(2, Math.round(ps.portrait_title_bg_padding * s))
     Object.assign(titleBgInline, {
-      backgroundColor: ps.portrait_title_bg_color,
+      // 透明度只作用于底色：后端只给填充色带 alpha，文字始终不透明
+      backgroundColor: hexToRgba(ps.portrait_title_bg_color, ps.portrait_title_bg_opacity),
       padding: `${pad}px ${pad * 2}px`,
       borderRadius: Math.round(ps.portrait_title_bg_radius * s) + 'px',
       display: 'inline-block',
-      opacity: String(ps.portrait_title_bg_opacity),
-      transform: isParallelogram ? `skewX(-${ps.portrait_title_bg_skew}deg)` : 'none',
+      transform: skew ? `skewX(-${skew}deg)` : 'none',
     })
   }
+  // 后端只把背景画成平行四边形，文字是正的；预览里把文字反向斜回来对齐
+  const counterSkew = skew ? { display: 'inline-block', transform: `skewX(${skew}deg)` } : {}
 
   return {
     canvas: {
@@ -149,6 +179,19 @@ const previewStyles = computed(() => {
       flexShrink: 0,
     },
     titleBgInline,
+    titleTextInline: counterSkew,
+    // overlay 模式下副标题画在标题底条里，紧跟标题下方(后端 gap=12px)
+    subInBar: {
+      // counterSkew 先展开：它带的 display:inline-block 会被下面的 block 覆盖，
+      // 副标题必须自成一行落在标题下方(顺序反了就并排显示)
+      ...counterSkew,
+      display: 'block',
+      marginTop: Math.max(1, Math.round(12 * s)) + 'px',
+      fontSize: Math.max(7, Math.round(ps.portrait_sub_title_font_size * s)) + 'px',
+      color: ps.portrait_sub_title_color,
+      fontWeight: 'normal' as const,
+      lineHeight: '1.3',
+    },
     title: {
       position: 'absolute' as const,
       top: Math.round(ps.portrait_title_y * s) + 'px',
@@ -161,9 +204,10 @@ const previewStyles = computed(() => {
       textShadow: shadowParts.join(', ') || 'none',
       padding: '0 6px',
       lineHeight: '1.3',
-      whiteSpace: 'nowrap' as const,
+      // overlay 模式后端会把标题折成最多两行，预览跟着折；drawtext 模式不折行，
+      // 超出画布就是会被裁掉，预览保持 nowrap 如实反映
+      whiteSpace: (ps.portrait_title_bg_enabled && isParallelogram ? 'normal' : 'nowrap') as const,
       overflow: 'hidden',
-      textOverflow: 'ellipsis',
     },
     subTitle: {
       position: 'absolute' as const,
@@ -201,7 +245,8 @@ const previewStyles = computed(() => {
       fontSize: Math.max(7, Math.round(ps.portrait_subtitle_font_size * s)) + 'px',
       color: '#FFFFFF',
       textShadow: '1px 1px 2px rgba(0,0,0,0.8)',
-      padding: '0 8px',
+      // 左右留白和成片一致(portrait_service.SUBTITLE_SIDE_MARGIN = 40)
+      padding: `0 ${Math.max(2, Math.round(40 * s))}px`,
       lineHeight: '1.4',
     },
   }
@@ -601,7 +646,7 @@ function formatDuration(seconds: number | null) {
         <template v-if="subtitleSettings.subtitle_enabled">
           <el-form-item label="字号">
             <div style="width: 100%; display: flex; align-items: center; gap: 12px;">
-              <el-slider v-model="subtitleSettings.subtitle_font_size" :min="12" :max="48" :step="1" style="flex: 1;" />
+              <el-slider v-model="subtitleSettings.subtitle_font_size" :min="12" :max="96" :step="1" style="flex: 1;" />
               <span style="min-width: 36px; text-align: right; font-size: 13px; color: #606266;">{{ subtitleSettings.subtitle_font_size }}px</span>
             </div>
           </el-form-item>
@@ -640,18 +685,22 @@ function formatDuration(seconds: number | null) {
           <div :style="previewStyles.canvas">
             <!-- 主标题（背景装饰自动包裹文字） -->
             <div :style="previewStyles.title">
-              <span :style="previewStyles.titleBgInline">{{ previewTitleText }}</span>
+              <span :style="previewStyles.titleBgInline">
+                <span :style="previewStyles.titleTextInline">{{ previewTitleText }}</span>
+                <!-- 平行四边形底条：副标题和主标题共用一个形状，就画在标题下方 -->
+                <span v-if="titleOverlayMode && previewSubTitleText" :style="previewStyles.subInBar">{{ previewSubTitleText }}</span>
+              </span>
             </div>
-            <!-- 副标题 -->
-            <div v-if="portraitSettings.portrait_sub_title_text?.trim()" :style="previewStyles.subTitle">
-              {{ portraitSettings.portrait_sub_title_text }}
+            <!-- 副标题（矩形/无底条时各自绝对定位） -->
+            <div v-if="!titleOverlayMode && previewSubTitleText" :style="previewStyles.subTitle">
+              {{ previewSubTitleText }}
             </div>
             <!-- 16:9 视频占位 -->
             <div :style="previewStyles.video">
               <span>16:9 视频画面</span>
             </div>
             <!-- 字幕示例 -->
-            <div :style="previewStyles.subtitle">这里是字幕示例文本</div>
+            <div :style="previewStyles.subtitle">{{ previewSubtitleSample }}</div>
           </div>
           <span style="font-size: 11px; color: #909399;">实时布局预览 (1080x1920)</span>
         </div>
@@ -672,7 +721,7 @@ function formatDuration(seconds: number | null) {
             </el-form-item>
             <el-form-item label="标题字号">
               <div style="width: 100%; display: flex; align-items: center; gap: 12px;">
-                <el-slider v-model="portraitSettings.portrait_title_font_size" :min="20" :max="80" :step="1" style="flex: 1;" />
+                <el-slider v-model="portraitSettings.portrait_title_font_size" :min="20" :max="160" :step="1" style="flex: 1;" />
                 <span style="min-width: 42px; text-align: right; font-size: 13px; color: #606266;">{{ portraitSettings.portrait_title_font_size }}px</span>
               </div>
             </el-form-item>
@@ -709,32 +758,11 @@ function formatDuration(seconds: number | null) {
               </div>
             </el-form-item>
 
-            <el-divider content-position="left">副标题</el-divider>
-            <el-form-item label="副标题文本">
-              <el-input v-model="portraitSettings.portrait_sub_title_text"
-                placeholder="留空则不显示副标题"
-                maxlength="40" show-word-limit />
-            </el-form-item>
-            <el-form-item label="副标题字号">
-              <div style="width: 100%; display: flex; align-items: center; gap: 12px;">
-                <el-slider v-model="portraitSettings.portrait_sub_title_font_size" :min="14" :max="40" :step="1" style="flex: 1;" />
-                <span style="min-width: 42px; text-align: right; font-size: 13px; color: #606266;">{{ portraitSettings.portrait_sub_title_font_size }}px</span>
+            <el-form-item label="背景条">
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <el-switch v-model="portraitSettings.portrait_title_bg_enabled" />
+                <span style="font-size: 12px; color: #909399;">给标题文字加一条底色；有副标题时副标题也会套用同一套背景</span>
               </div>
-            </el-form-item>
-            <el-form-item label="副标题颜色">
-              <el-color-picker v-model="portraitSettings.portrait_sub_title_color" />
-              <span style="margin-left: 8px; font-size: 13px; color: #909399;">{{ portraitSettings.portrait_sub_title_color }}</span>
-            </el-form-item>
-            <el-form-item label="副标题 Y 位置">
-              <div style="width: 100%; display: flex; align-items: center; gap: 12px;">
-                <el-slider v-model="portraitSettings.portrait_sub_title_y" :min="0" :max="400" :step="5" style="flex: 1;" />
-                <span style="min-width: 42px; text-align: right; font-size: 13px; color: #606266;">{{ portraitSettings.portrait_sub_title_y }}px</span>
-              </div>
-            </el-form-item>
-
-            <el-divider content-position="left">标题背景装饰</el-divider>
-            <el-form-item label="启用背景条">
-              <el-switch v-model="portraitSettings.portrait_title_bg_enabled" />
             </el-form-item>
             <template v-if="portraitSettings.portrait_title_bg_enabled">
               <el-form-item label="背景条颜色">
@@ -773,6 +801,35 @@ function formatDuration(seconds: number | null) {
               </el-form-item>
             </template>
 
+            <el-divider content-position="left">副标题</el-divider>
+            <el-form-item label="副标题文本">
+              <el-input v-model="portraitSettings.portrait_sub_title_text"
+                placeholder="留空则不显示副标题"
+                maxlength="40" show-word-limit />
+            </el-form-item>
+            <el-form-item label="副标题字号">
+              <div style="width: 100%; display: flex; align-items: center; gap: 12px;">
+                <el-slider v-model="portraitSettings.portrait_sub_title_font_size" :min="14" :max="120" :step="1" style="flex: 1;" />
+                <span style="min-width: 42px; text-align: right; font-size: 13px; color: #606266;">{{ portraitSettings.portrait_sub_title_font_size }}px</span>
+              </div>
+            </el-form-item>
+            <el-form-item label="副标题颜色">
+              <el-color-picker v-model="portraitSettings.portrait_sub_title_color" />
+              <span style="margin-left: 8px; font-size: 13px; color: #909399;">{{ portraitSettings.portrait_sub_title_color }}</span>
+            </el-form-item>
+            <el-form-item label="副标题 Y 位置">
+              <div style="width: 100%;">
+                <div style="display: flex; align-items: center; gap: 12px;">
+                  <el-slider v-model="portraitSettings.portrait_sub_title_y" :min="0" :max="400" :step="5"
+                    :disabled="titleOverlayMode" style="flex: 1;" />
+                  <span style="min-width: 42px; text-align: right; font-size: 13px; color: #606266;">{{ portraitSettings.portrait_sub_title_y }}px</span>
+                </div>
+                <div v-if="titleOverlayMode" style="font-size: 12px; color: #e6a23c; line-height: 1.5;">
+                  背景形状为平行四边形时，副标题会和主标题画进同一个底条、紧跟标题下方，此项不生效
+                </div>
+              </div>
+            </el-form-item>
+
             <el-divider content-position="left">视频位置</el-divider>
             <el-form-item label="视频 Y 位置">
               <div style="width: 100%; display: flex; align-items: center; gap: 12px;">
@@ -784,7 +841,7 @@ function formatDuration(seconds: number | null) {
             <el-divider content-position="left">字幕布局</el-divider>
             <el-form-item label="字幕字号">
               <div style="width: 100%; display: flex; align-items: center; gap: 12px;">
-                <el-slider v-model="portraitSettings.portrait_subtitle_font_size" :min="20" :max="60" :step="1" style="flex: 1;" />
+                <el-slider v-model="portraitSettings.portrait_subtitle_font_size" :min="20" :max="160" :step="1" style="flex: 1;" />
                 <span style="min-width: 42px; text-align: right; font-size: 13px; color: #606266;">{{ portraitSettings.portrait_subtitle_font_size }}px</span>
               </div>
             </el-form-item>

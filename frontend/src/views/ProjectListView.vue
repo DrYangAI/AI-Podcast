@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { Project } from '../types/project'
@@ -11,18 +11,38 @@ const projects = ref<Project[]>([])
 const total = ref(0)
 const page = ref(1)
 const loading = ref(false)
+const search = ref('')
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+// 搜索请求可能并发（防抖刚发出、用户又回车/清空），老响应后到会覆盖新结果，
+// 出现「搜索框已清空、列表还是上次的关键词」。只认最后一次发出的请求。
+let requestSeq = 0
 
 onMounted(() => loadProjects())
+onUnmounted(() => { if (searchTimer) clearTimeout(searchTimer) })
 
 async function loadProjects() {
+  const seq = ++requestSeq
   loading.value = true
   try {
-    const { data } = await projectsApi.list(page.value, 20)
+    const { data } = await projectsApi.list(page.value, 20, undefined, search.value.trim() || undefined)
+    if (seq !== requestSeq) return   // 已有更新的请求发出，这份结果作废
     projects.value = data.items
     total.value = data.total
   } finally {
-    loading.value = false
+    if (seq === requestSeq) loading.value = false
   }
+}
+
+// 换关键词后停在旧页码会看到空列表，所以先回到第一页
+function runSearch() {
+  if (searchTimer) clearTimeout(searchTimer)
+  page.value = 1
+  loadProjects()
+}
+
+function onSearchInput() {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(runSearch, 300)
 }
 
 async function handleDelete(id: string) {
@@ -48,13 +68,20 @@ function getStatusLabel(s: string) {
 
 <template>
   <div style="max-width: 1200px; margin: 0 auto;">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-      <h2 style="margin: 0;">项目列表</h2>
-      <el-button type="primary" @click="router.push('/')">
-        <el-icon><Plus /></el-icon> 新建项目
-      </el-button>
+    <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 20px;">
+      <h2 style="margin: 0; white-space: nowrap;">项目列表 <span style="font-size: 14px; font-weight: normal; color: var(--el-text-color-secondary);">共 {{ total }} 个</span></h2>
+      <div style="display: flex; align-items: center; gap: 12px;">
+        <el-input v-model="search" placeholder="搜索标题或话题" clearable style="width: 240px;"
+          @input="onSearchInput" @clear="runSearch" @keyup.enter="runSearch">
+          <template #prefix><el-icon><Search /></el-icon></template>
+        </el-input>
+        <el-button type="primary" @click="router.push('/')">
+          <el-icon><Plus /></el-icon> 新建项目
+        </el-button>
+      </div>
     </div>
-    <el-table :data="projects" v-loading="loading" stripe>
+    <el-table :data="projects" v-loading="loading" stripe
+      :empty-text="search.trim() ? `没有匹配“${search.trim()}”的项目` : '暂无项目'">
       <el-table-column prop="title" label="标题" min-width="180">
         <template #default="{ row }">
           <el-link @click="router.push(`/projects/${row.id}`)">{{ row.title }}</el-link>
