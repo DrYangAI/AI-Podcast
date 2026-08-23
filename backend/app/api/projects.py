@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile, File, Form
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -42,6 +42,11 @@ PORTRAIT_SETTING_FIELDS = tuple(
 )
 
 
+def _escape_like(term: str) -> str:
+    """转义 LIKE 的通配符,让用户输入的 % _ \\ 按字面匹配。"""
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _resolve_portrait_settings(
     data: ProjectCreate, defaults: dict[str, object]
 ) -> dict[str, object]:
@@ -56,12 +61,20 @@ async def list_projects(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     status: str | None = None,
+    search: str | None = Query(None, max_length=200),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all projects with pagination."""
+    """List all projects with pagination, optionally filtered by a title/topic keyword."""
     query = select(Project).order_by(Project.created_at.desc())
     if status:
         query = query.where(Project.status == status)
+    if search and search.strip():
+        # 标题和话题都搜,中文没有大小写之分,英文用 ilike 顺带不区分大小写
+        pattern = f"%{_escape_like(search.strip())}%"
+        query = query.where(or_(
+            Project.title.ilike(pattern, escape="\\"),
+            Project.topic.ilike(pattern, escape="\\"),
+        ))
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
@@ -525,6 +538,11 @@ async def delete_segment(project_id: str, segment_id: str,
         raise HTTPException(status_code=404, detail="Segment not found")
 
     removed_order = segment.segment_order
+    count_result = await db.execute(
+        select(func.count()).select_from(Segment).where(Segment.project_id == project_id)
+    )
+    previous_count = count_result.scalar() or 0
+
     await db.delete(segment)
     await db.flush()
 
@@ -538,11 +556,6 @@ async def delete_segment(project_id: str, segment_id: str,
     for seg in later_result.scalars().all():
         seg.segment_order -= 1
         await db.flush()
-    count_result = await db.execute(
-        select(func.count()).select_from(Segment).where(Segment.project_id == project_id)
-    )
-    previous_count = count_result.scalar() or 0
-
 
     from ..services.audio_service import sync_after_segment_removed
     try:
