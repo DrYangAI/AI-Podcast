@@ -232,10 +232,14 @@ class VideoService:
                 from .asr_service import transcribe_and_generate_srt
                 asr_srt_dir = Path(settings.storage.base_dir) / "subtitles" / project_id
                 asr_srt_dir.mkdir(parents=True, exist_ok=True)
+                # 字幕文字用口播稿(TTS 念的原文),ASR 只提供时间轴 —— 否则
+                # Whisper 的同音词错误(骨龄→古灵)会直接进成片。segment_texts
+                # 此时已按播放顺序排好,片头/片尾也在里面。
                 asr_srt_path = await transcribe_and_generate_srt(
                     audio_path=Path(audio.file_path),
                     output_path=asr_srt_dir / "asr_subtitles.srt",
                     max_chars_per_line=settings.subtitles.max_chars_per_line,
+                    reference_texts=[clean_script_for_tts(t) for t in segment_texts],
                 )
 
             # Compose video

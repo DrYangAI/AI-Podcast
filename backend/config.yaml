@@ -48,8 +48,10 @@ subtitles:
   outline_color: "#000000"
   outline_width: 2
   position: "bottom"
+  # 竖屏字幕的每行字数按字号自动算(见 subtitle_renderer.chars_per_line),
+  # 这里的 max_chars_per_line 只对横屏生效。
   max_chars_per_line: 20
-  max_lines: 1
+  max_lines: 2
   margin_bottom: 50
 
 content:
