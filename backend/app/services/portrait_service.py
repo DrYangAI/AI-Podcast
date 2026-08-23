@@ -25,9 +25,9 @@ from ..database import async_session_factory
 from ..models import Project, Segment, Script, AudioAsset, VideoOutput
 from ..config import get_settings
 from ..video.ffmpeg_builder import FFmpegBuilder
-from ..video.subtitle_renderer import SubtitleRenderer, chars_per_line
+from ..video.subtitle_renderer import SubtitleRenderer, chars_per_line, SUBTITLE_SIDE_MARGIN
 from ..video.composer import calculate_segment_durations, _hex_color_to_ass
-from .audio_service import clean_script_for_tts
+from .audio_service import clean_script_for_tts, uses_per_segment_tts
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,6 @@ PORTRAIT_HEIGHT = 1920
 VIDEO_WIDTH = 1080
 VIDEO_HEIGHT = 608  # 1080 * 9/16 ≈ 607.5 → 608
 HEADER_HEIGHT = 200
-SUBTITLE_SIDE_MARGIN = 40  # 字幕左右留白,折行时不至于贴着画面边缘
 # 视频放在中间偏上：标题下方留一段间距，视频不紧贴标题
 VIDEO_Y_OFFSET = 480  # 标题(200) + 间距(280) → 视频从 480 开始
 SUBTITLE_AREA_TOP = VIDEO_Y_OFFSET + VIDEO_HEIGHT  # = 1088
@@ -410,8 +409,11 @@ class PortraitCompositeService:
         if not segments:
             return []
 
-        if all(s.script_text for s in segments):
-            body = [s.script_text for s in segments]
+        # 判断口径必须和 audio_service 合成语音时一致,否则参考文本和音频对不上,
+        # 对齐命中率跌破阈值就静默退回原始识别文本(同音词错误照旧)
+        per_segment = uses_per_segment_tts(project, segments)
+        if per_segment:
+            body = [s.script_text or "" for s in segments]
         else:
             result = await db.execute(
                 select(Script).where(Script.project_id == project_id)
@@ -421,13 +423,15 @@ class PortraitCompositeService:
             paragraphs = _split_script_to_paragraphs(script, len(segments)) if script else None
             body = paragraphs[:len(segments)] if paragraphs else [s.content for s in segments]
 
+        # 片头/片尾只有逐段模式才会被合成进 speech.mp3(见 audio_service),
+        # 整篇模式下音频里根本没有,算进参考文本只会凭空多出一段对不上的字。
         texts = []
         intro = getattr(project, "intro_text", None) if project else None
-        if intro and intro.strip():
+        if per_segment and intro and intro.strip():
             texts.append(intro)
         texts.extend(body)
         outro = getattr(project, "outro_text", None) if project else None
-        if outro and outro.strip():
+        if per_segment and outro and outro.strip():
             texts.append(outro)
 
         cleaned = [clean_script_for_tts(t or "") for t in texts]
@@ -455,7 +459,7 @@ class PortraitCompositeService:
             # _build_ffmpeg_command 里的 WrapStyle)。
             project = await db.get(Project, project_id)
             font_size = getattr(project, "portrait_subtitle_font_size", 38) if project else 38
-            per_line = chars_per_line(font_size, PORTRAIT_WIDTH)
+            per_line = chars_per_line(font_size, PORTRAIT_WIDTH, SUBTITLE_SIDE_MARGIN)
             max_lines = max(1, settings.subtitles.max_lines)
             # 留 2 个字的余量:切行时会把句末标点收进本行(见 asr_service._line_ranges),
             # 不预留的话这一两个标点会把整条挤到多出一行,末行只剩一个句号。

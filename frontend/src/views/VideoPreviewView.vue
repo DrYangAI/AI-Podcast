@@ -119,8 +119,12 @@ const titleOverlayMode = computed(() =>
   portraitSettings.portrait_title_bg_shape !== 'rect'
 )
 
+// 兼容 #RGB 简写；认不出来的值（空串、rgba(...) 等）原样返回，
+// 总比拼出 rgba(NaN,NaN,NaN) 让浏览器整条丢弃、预览里底条凭空消失强
 function hexToRgba(hex: string, alpha: number): string {
-  const h = hex.replace('#', '')
+  let h = (hex || '').trim().replace('#', '')
+  if (h.length === 3) h = h.split('').map(c => c + c).join('')
+  if (!/^[0-9a-fA-F]{6}$/.test(h)) return hex
   const r = parseInt(h.slice(0, 2), 16)
   const g = parseInt(h.slice(2, 4), 16)
   const b = parseInt(h.slice(4, 6), 16)

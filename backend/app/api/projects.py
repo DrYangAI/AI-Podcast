@@ -561,10 +561,11 @@ async def delete_segment(project_id: str, segment_id: str,
     try:
         sync = await sync_after_segment_removed(db, project_id, removed_order, previous_count)
     except Exception:
-        # 段落本身已经删掉了,音频没收拾干净不该让整个删除失败;
-        # 返回 chunks_synced=False,前端提示用户去音频页重新拼接。
+        # 段落本身已经删掉了,同步没做完不该让整个删除失败。口播稿的写入在
+        # sync 的最前面,能走到这里说明它要么没执行、要么已经成功但后续炸了 ——
+        # 两种都不能断言"没动它",所以报 None(未知),别让前端说反话。
         logger.exception("Failed to sync script/audio after deleting segment")
-        sync = {"script_synced": False, "chunks_synced": False, "audio_duration": None}
+        sync = {"script_synced": None, "chunks_synced": False, "audio_duration": None}
     await db.flush()
 
     return {"status": "ok", **sync}

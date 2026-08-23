@@ -3,6 +3,8 @@
 Whisper 会把"骨龄"听成"古灵"这类同音词,成片字幕不该带上这种错误。
 """
 
+import pytest
+
 from app.services.asr_service import (
     _AsrSegment,
     _AsrWord,
@@ -121,3 +123,38 @@ def test_line_never_starts_with_punctuation():
     assert lines[0] == "来源于对骨龄增长应该与年龄增长匹配的预期。"
     assert not any(l[0] in "，。、！？；：" for l in lines)
     assert "".join(lines) == text
+
+
+@pytest.mark.parametrize("bad", [0, -5])
+def test_line_ranges_does_not_hang_on_nonpositive_max_chars(bad):
+    # max_chars<=0 时 end==start,start 推不动就是死循环
+    lines = [("骨龄不是匀速的"[a:b]) for a, b in _line_ranges("骨龄不是匀速的", bad)]
+    assert "".join(lines) == "骨龄不是匀速的"
+
+
+def test_one_bad_timestamp_does_not_push_later_lines_later():
+    # ASR 时间倒挂时只钳这一条,不能把后面每条都往后推
+    segments = [_AsrSegment(text="", start=0.0, end=3.0, words=[
+        _AsrWord("第一句", 0.0, 2.0),
+        _AsrWord("第二句", 1.0, 1.2),   # 倒挂:起点比上一条的终点还早
+        _AsrWord("第三句", 2.5, 3.0),
+    ])]
+    entries = _entries_from_reference(segments, ["第一句", "第二句", "第三句"], 20)
+
+    assert entries[-1].start_time == pytest.approx(2.5)
+    assert entries[-1].end_time == pytest.approx(3.0)
+
+
+def test_clean_script_for_tts_is_idempotent():
+    # video_service 会对 intro/outro 二次清洗；只要这个性质成立就无害，
+    # 将来加了会匹配自身输出的规则,这里会先炸出来
+    from app.services.audio_service import clean_script_for_tts
+
+    samples = [
+        "（轻松、亲切的开场）大家好，今天聊骨龄。",
+        "**重点**：骨龄不是一年长一岁\n\n## 小标题\n- 要点一",
+        "骨龄，不是匀速的。(认真的语气)真的。",
+    ]
+    for raw in samples:
+        once = clean_script_for_tts(raw)
+        assert clean_script_for_tts(once) == once

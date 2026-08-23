@@ -12,7 +12,10 @@ from ..database import async_session_factory
 from ..models import Project, Segment, Script, ImageAsset, AudioAsset, VideoOutput
 from ..config import get_settings
 from ..video.composer import VideoComposer, calculate_segment_durations
-from ..video.subtitle_renderer import SubtitleRenderer
+from ..video.image_processor import ImageProcessor
+from ..video.subtitle_renderer import (
+    SubtitleRenderer, chars_per_line, SUBTITLE_SIDE_MARGIN,
+)
 from .audio_service import clean_script_for_tts
 
 logger = logging.getLogger(__name__)
@@ -226,6 +229,13 @@ class VideoService:
             file_name = self._build_filename(project, settings.output.naming_rule)
             output_path = output_dir / f"{file_name}.{settings.output.default_format}"
 
+            # 每行字数按字号算,不能用配置里那个写死的 20:字幕字号可调到 96,
+            # 20×96 已经是 1920 整幅画面宽 —— 竖屏那边修过同样的问题。
+            frame_w = ImageProcessor.get_resolution(effective_aspect_ratio)[0]
+            sub_font_size = getattr(project, "subtitle_font_size", 18) or 18
+            per_line = chars_per_line(sub_font_size, frame_w, SUBTITLE_SIDE_MARGIN)
+            max_lines = max(1, settings.subtitles.max_lines)
+
             # Try ASR-based precise subtitles
             asr_srt_path = None
             if effective_subtitle_enabled:
@@ -238,7 +248,7 @@ class VideoService:
                 asr_srt_path = await transcribe_and_generate_srt(
                     audio_path=Path(audio.file_path),
                     output_path=asr_srt_dir / "asr_subtitles.srt",
-                    max_chars_per_line=settings.subtitles.max_chars_per_line,
+                    max_chars_per_line=max(per_line, per_line * max_lines - 2),
                     reference_texts=[clean_script_for_tts(t) for t in segment_texts],
                 )
 
@@ -259,8 +269,8 @@ class VideoService:
                     "font_color": getattr(project, "subtitle_font_color", "#FFFFFF"),
                     "outline_width": getattr(project, "subtitle_outline_width", 1),
                     "margin_bottom": getattr(project, "subtitle_margin_bottom", 30),
-                    "max_chars_per_line": settings.subtitles.max_chars_per_line,
-                    "max_lines": settings.subtitles.max_lines,
+                    "max_chars_per_line": per_line,
+                    "max_lines": max_lines,
                 },
                 video_quality={
                     "crf": settings.output.video_quality.crf,

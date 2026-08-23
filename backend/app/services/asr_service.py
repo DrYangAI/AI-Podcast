@@ -149,6 +149,7 @@ def _entries_from_asr(segments: list[_AsrSegment],
 
 def _split_to_lines(text: str, max_chars: int) -> list[str]:
     """Split text into lines of at most max_chars characters."""
+    max_chars = max(1, max_chars)  # 同 _line_ranges:0 会让切片永远切不动
     text = text.strip()
     if not text:
         return [""]
@@ -245,6 +246,8 @@ def _line_ranges(text: str, max_chars: int) -> list[tuple[int, int]]:
 
     优先在标点处断句,断不动再按 max_chars 硬切,尽量不把句子切碎。
     """
+    # max_chars<=0 会让 end==start,start 永远推不动 —— 死循环
+    max_chars = max(1, max_chars)
     ranges: list[tuple[int, int]] = []
     start, n = 0, len(text)
     while start < n:
@@ -316,8 +319,12 @@ def _entries_from_reference(segments: list[_AsrSegment],
             slot = [t for t in times[base + a:base + b_] if t is not None]
             if not display or not slot:
                 continue
+            # 时间轴按上一条的结尾钳一下,避免重叠;但结尾只在退化时才外推,
+            # 否则一次 ASR 时间倒挂会被逐条放大,后面的字幕越拖越晚。
             start = max(slot[0][0], prev_end)
-            end = max(slot[-1][1], start + 0.1)
+            end = slot[-1][1]
+            if end <= start:
+                end = start + 0.1
             entries.append(SubtitleEntry(index=index, start_time=start,
                                          end_time=end, text=display))
             prev_end = end

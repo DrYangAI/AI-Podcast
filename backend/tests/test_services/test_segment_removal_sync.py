@@ -208,6 +208,15 @@ async def test_misaligned_chunks_are_left_untouched(db, storage):
     assert [c["text"] for c in read_chunks(storage.root)] == ["甲乙", "丙"]
     assert storage.concat_calls == []
 
+    # 说了"没动音频"就一个字节都不能动:段落音频目录必须原封不动。
+    # 判断该删哪一段之前就把目录删改掉的话,这条退路等于先毁了数据再说不敢动。
+    seg_dir = storage.root / "audio" / PROJECT_ID / "segments"
+    assert sorted(d.name for d in seg_dir.iterdir()) == ["seg_000", "seg_001", "seg_002"]
+    assert (seg_dir / "seg_001" / "speech.mp3").read_text() == "seg1"
+    segments = (await db.execute(
+        select(Segment).order_by(Segment.segment_order))).scalars().all()
+    assert all(s.audio_file for s in segments)
+
 
 @pytest.mark.asyncio
 async def test_no_audio_yet_still_fixes_the_script(db, storage):

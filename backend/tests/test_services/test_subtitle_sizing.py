@@ -31,3 +31,13 @@ def test_always_leaves_room_for_at_least_a_few_chars():
     # 字号大到离谱时也不能返回 0,否则切行会死循环
     assert chars_per_line(9999, PORTRAIT_WIDTH) >= 4
     assert chars_per_line(0, PORTRAIT_WIDTH) >= 4
+
+
+def test_helper_and_ffmpeg_margin_come_from_one_constant():
+    # chars_per_line 的算账依据必须和 force_style 里的 MarginL/MarginR 是同一个数,
+    # 各写各的一旦漂移,算出的字数就和 libass 的折行宽度对不上
+    from app.video.subtitle_renderer import SUBTITLE_SIDE_MARGIN
+    import inspect
+
+    default = inspect.signature(chars_per_line).parameters["side_margin"].default
+    assert default == SUBTITLE_SIDE_MARGIN

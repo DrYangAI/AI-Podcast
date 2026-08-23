@@ -81,6 +81,9 @@ async function handleDelete(segment: any) {
     await store.loadSegments(projectId.value)
     if (data.script_synced === false) {
       ElMessage.warning('段落已删除，但口播稿和段落对不上，没有动它，请手动检查口播稿')
+    } else if (!data.chunks_synced && data.audio_duration === null && data.script_synced === null) {
+      // 同步过程中出了异常，口播稿是否已改无法断言，别下结论
+      ElMessage.warning('段落已删除，但后续同步未完成，请检查口播稿和音频')
     } else if (data.audio_duration !== null) {
       ElMessage.success('段落、口播稿和对应音频已删除，整段语音已重新拼接')
     } else if (data.chunks_synced) {

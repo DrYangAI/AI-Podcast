@@ -96,6 +96,22 @@ def chunks_align_with_segments(chunks: list[dict], segments: list) -> bool:
     return bool(segments) and len(body) == len(segments)
 
 
+def uses_per_segment_tts(project, segments: list) -> bool:
+    """TTS 是不是按段落逐段合成的(而不是整篇一次合成)。
+
+    这个判断决定了 speech.mp3 的构成:逐段模式下音频是「片头 + 各段 script_text
+    + 片尾」拼起来的;整篇模式下只有 Script.content 一条,没有片头片尾。字幕要拿
+    口播稿去对齐 ASR 的时间轴,参考文本必须和音频的构成一致,所以合成语音、横屏
+    字幕、竖屏字幕三处必须用同一个判断 —— 各写各的就会对不上,而对不上只会静默
+    退回原始识别文本(同音词错误照旧)。
+
+    PPT 导入的项目即便有幻灯片没有备注也走逐段模式(空备注合成为静音),所以
+    单独放行。
+    """
+    is_ppt = bool(project and getattr(project, "source_type", "") == "ppt")
+    return bool(segments) and (is_ppt or all(s.script_text for s in segments))
+
+
 def _shift_segment_audio_dirs(segments_dir: Path, removed_order: int) -> None:
     """段落音频目录整体前移一位,让 seg_XXX 重新对上 segment_order。
 
@@ -191,8 +207,35 @@ async def sync_after_segment_removed(db, project_id: str, removed_order: int,
     script_synced = await _rebuild_script_after_removal(
         db, project_id, segments, removed_order, previous_count
     )
+    no_audio = {"script_synced": script_synced, "chunks_synced": False,
+                "audio_duration": None}
 
+    # 先把该删哪一段判断清楚,再动盘上的东西。反过来做的话,"分段和段落对不上、
+    # 不敢动"这条退路会在音频目录已经被删改之后才触发 —— 嘴上说没动,其实
+    # 已经把一段音频永久删掉、后面每段的 audio_file 都指到了邻居的文件上。
     audio_dir = Path(settings.storage.base_dir) / "audio" / project_id
+    chunks_dir = audio_dir / "chunks"
+    meta = TTSProvider.load_chunks_json(chunks_dir)
+    chunks = meta["chunks"] if meta else []
+    drop_at = None
+    if meta:
+        body_indexes = [i for i, c in enumerate(chunks)
+                        if c.get("type") not in CHUNK_META_TYPES]
+        if len(body_indexes) != previous_count or not 0 <= removed_order < previous_count:
+            # 分段和段落本来就对不上(旧的整篇切块模式),无从判断该删哪一段。
+            # 这时连段落音频目录也不能碰:目录改名要配合 audio_file 一起改,
+            # 而分段对不上说明这份音频的结构我们已经看不懂了。
+            logger.warning(
+                "删除段落 %d 后未能同步音频分段:分段有 %d 段,段落有 %d 个;"
+                "盘上的音频保持原样", removed_order, len(body_indexes), previous_count,
+            )
+            return no_audio
+        drop_at = body_indexes[removed_order]
+
+    # DB 侧的改动先落一次,免得约束错误在文件已经删改之后才炸出来
+    await db.flush()
+
+    # 目录名带着段落序号,DB 里段落已经重排过了,盘上也要跟着挪
     _shift_segment_audio_dirs(audio_dir / "segments", removed_order)
     for seg in segments:
         if not seg.audio_file:
@@ -200,25 +243,10 @@ async def sync_after_segment_removed(db, project_id: str, removed_order: int,
         moved = audio_dir / "segments" / f"seg_{seg.segment_order:03d}" / "speech.mp3"
         seg.audio_file = str(moved) if moved.exists() else None
 
-    chunks_dir = audio_dir / "chunks"
-    meta = TTSProvider.load_chunks_json(chunks_dir)
-    if not meta:
-        return {"script_synced": script_synced, "chunks_synced": False,
-                "audio_duration": None}
+    if drop_at is None:
+        return no_audio
 
-    chunks = meta["chunks"]
-    body_indexes = [i for i, c in enumerate(chunks)
-                    if c.get("type") not in CHUNK_META_TYPES]
-    if len(body_indexes) != previous_count or not 0 <= removed_order < previous_count:
-        # 分段和段落本来就对不上(旧的整篇切块模式),无从判断该删哪一段
-        logger.warning(
-            "删除段落 %d 后未能同步音频分段:分段有 %d 段,段落有 %d 个",
-            removed_order, len(body_indexes), previous_count,
-        )
-        return {"script_synced": script_synced, "chunks_synced": False,
-                "audio_duration": None}
-
-    dropped = chunks.pop(body_indexes[removed_order])
+    dropped = chunks.pop(drop_at)
     (chunks_dir / dropped["file"]).unlink(missing_ok=True)
     _renumber_chunks(chunks_dir, chunks)
     TTSProvider._save_chunks_json(
@@ -226,8 +254,14 @@ async def sync_after_segment_removed(db, project_id: str, removed_order: int,
         voice_display=meta.get("voice_display", ""),
     )
 
-    duration = await _reconcat_after_removal(db, project_id, chunks_dir, chunks,
-                                             audio_dir / "speech.mp3")
+    try:
+        duration = await _reconcat_after_removal(db, project_id, chunks_dir, chunks,
+                                                 audio_dir / "speech.mp3")
+    except Exception:
+        # 分段已经删干净了,只是整段没拼成(ffmpeg 缺失/失败)。这一步失败不该
+        # 连累前面已经写好的口播稿 —— 如实回报,让前端提示去音频页手动拼接。
+        logger.exception("删除段落 %d 后重新拼接失败", removed_order)
+        duration = None
     logger.info("删除段落 %d:口播稿同步=%s,剩余分段 %d,重新拼接=%s",
                 removed_order, script_synced, len(chunks),
                 f"{duration:.1f}s" if duration is not None else "跳过")
@@ -257,6 +291,9 @@ async def _reconcat_after_removal(db, project_id: str, chunks_dir: Path,
     if audio:
         audio.file_path = str(output_path)
         audio.duration = duration
+        # 和 concatenate_chunks 保持一致:拼出来的就是完整可用的音频,
+        # 状态还停在 failed/pending 的话视频合成会一直说"没有已完成的音频"
+        audio.status = "completed"
     return duration
 
 
@@ -420,10 +457,7 @@ class AudioService:
             segments = list(seg_result.scalars().all())
             # PPT-imported projects use the per-segment path even when some slides
             # have empty notes (those become silent still-frames below).
-            is_ppt = bool(project and getattr(project, "source_type", "") == "ppt")
-            has_segment_scripts = bool(segments) and (
-                is_ppt or all(seg.script_text for seg in segments)
-            )
+            has_segment_scripts = uses_per_segment_tts(project, segments)
 
             if has_segment_scripts:
                 # === New path: per-segment TTS synthesis ===

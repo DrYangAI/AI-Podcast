@@ -13,18 +13,23 @@ const page = ref(1)
 const loading = ref(false)
 const search = ref('')
 let searchTimer: ReturnType<typeof setTimeout> | null = null
+// 搜索请求可能并发（防抖刚发出、用户又回车/清空），老响应后到会覆盖新结果，
+// 出现「搜索框已清空、列表还是上次的关键词」。只认最后一次发出的请求。
+let requestSeq = 0
 
 onMounted(() => loadProjects())
 onUnmounted(() => { if (searchTimer) clearTimeout(searchTimer) })
 
 async function loadProjects() {
+  const seq = ++requestSeq
   loading.value = true
   try {
     const { data } = await projectsApi.list(page.value, 20, undefined, search.value.trim() || undefined)
+    if (seq !== requestSeq) return   // 已有更新的请求发出，这份结果作废
     projects.value = data.items
     total.value = data.total
   } finally {
-    loading.value = false
+    if (seq === requestSeq) loading.value = false
   }
 }
 

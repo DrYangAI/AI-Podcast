@@ -12,7 +12,13 @@ class SubtitleEntry:
     text: str
 
 
-def chars_per_line(font_size: int, frame_width: int, side_margin: int = 40) -> int:
+# 字幕左右留白。既是 chars_per_line 的算账依据,也是 ffmpeg force_style 里的
+# MarginL/MarginR —— 两者必须是同一个数,否则算出的字数和 libass 的折行宽度对不上。
+SUBTITLE_SIDE_MARGIN = 40
+
+
+def chars_per_line(font_size: int, frame_width: int,
+                   side_margin: int = SUBTITLE_SIDE_MARGIN) -> int:
     """一行放得下多少个中文字。
 
     中文是等宽方块字,一个字约占 font_size 像素宽,所以可用宽度除以字号就是每行
