@@ -89,6 +89,14 @@ export interface Segment {
   script_text: string | null
 }
 
+// 删段落时口播稿和音频会一起收拾,后端回报哪几处真的同步上了
+export interface SegmentDeleteResult {
+  status: string
+  script_synced: boolean | null   // null = 还没生成口播稿
+  chunks_synced: boolean
+  audio_duration: number | null
+}
+
 export interface ImageAsset {
   id: string
   segment_id: string

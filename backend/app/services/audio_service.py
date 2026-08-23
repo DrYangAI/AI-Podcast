@@ -96,6 +96,170 @@ def chunks_align_with_segments(chunks: list[dict], segments: list) -> bool:
     return bool(segments) and len(body) == len(segments)
 
 
+def _shift_segment_audio_dirs(segments_dir: Path, removed_order: int) -> None:
+    """段落音频目录整体前移一位,让 seg_XXX 重新对上 segment_order。
+
+    目录名带着段落序号(seg_003),删掉中间一段后面每段都要往前挪。升序处理,
+    目标目录总是刚被腾空的,不会撞名。
+    """
+    import shutil
+
+    if not segments_dir.exists():
+        return
+
+    shutil.rmtree(segments_dir / f"seg_{removed_order:03d}", ignore_errors=True)
+    later = sorted(
+        (d for d in segments_dir.iterdir()
+         if d.is_dir() and d.name.startswith("seg_") and d.name[4:].isdigit()
+         and int(d.name[4:]) > removed_order),
+        key=lambda d: int(d.name[4:]),
+    )
+    for d in later:
+        d.replace(segments_dir / f"seg_{int(d.name[4:]) - 1:03d}")
+
+
+def _renumber_chunks(chunks_dir: Path, chunks: list[dict]) -> None:
+    """重新编号分段,让 index 和文件名 chunk_XXX.mp3 重新对齐。
+
+    删掉一段后面每段都往前挪一位;升序处理,目标文件名总是刚被腾空的。
+    """
+    for i, chunk in enumerate(chunks):
+        target = f"chunk_{i:03d}.mp3"
+        if chunk["file"] != target:
+            src = chunks_dir / chunk["file"]
+            if src.exists():
+                src.replace(chunks_dir / target)
+            chunk["file"] = target
+        chunk["index"] = i
+
+
+async def _rebuild_script_after_removal(db, project_id: str, segments: list,
+                                        removed_order: int, previous_count: int) -> bool | None:
+    """把整篇口播稿里被删段落的那一段去掉。
+
+    返回 True 表示已同步,False 表示对不上没敢动,None 表示还没生成口播稿、
+    本来就没有要同步的东西。
+    """
+    result = await db.execute(select(Script).where(Script.project_id == project_id))
+    script = result.scalar_one_or_none()
+    if not script:
+        return None
+
+    if segments and all(s.script_text for s in segments):
+        # 逐段模式:整篇稿本来就是各段拼回来的,重拼一次即可
+        new_content = "\n\n".join(s.script_text for s in segments)
+    else:
+        # 整篇模式:段落没有各自的稿子,只能按空行切开删掉对应那一段。
+        # 段数对不上说明稿子和段落早已不同步,这时宁可不动。
+        paragraphs = [p.strip() for p in script.content.split("\n\n") if p.strip()]
+        if len(paragraphs) != previous_count or not 0 <= removed_order < previous_count:
+            logger.warning(
+                "删除段落 %d 后未能同步口播稿:稿子有 %d 段,段落有 %d 个",
+                removed_order, len(paragraphs), previous_count,
+            )
+            return False
+        del paragraphs[removed_order]
+        new_content = "\n\n".join(paragraphs)
+
+    script.content = new_content
+    script.is_manual = True
+    script.version += 1
+    return True
+
+
+async def sync_after_segment_removed(db, project_id: str, removed_order: int,
+                                     previous_count: int) -> dict:
+    """段落被删除后,把口播稿和音频一并收拢干净。
+
+    段落 / 口播稿 / 音频分段是同一份内容的三个视图(见 ``update_chunk_text``),
+    删段落时三处都要跟着删,否则整篇口播稿和合成好的 speech.mp3 里还留着那段
+    内容,而且分段数和段落数一对不上,分段改文字就再也同步不回段落了。
+
+    调用方传入的 ``db`` 就是当前请求的会话,这里只写不提交(由调用方提交)。
+    返回哪几处真的同步上了:``script_synced``(None 表示还没生成口播稿)、
+    ``chunks_synced``、``audio_duration``(None 表示没能重新拼接)。
+    """
+    settings = get_settings()
+
+    seg_result = await db.execute(
+        select(Segment)
+        .where(Segment.project_id == project_id)
+        .order_by(Segment.segment_order)
+    )
+    segments = list(seg_result.scalars().all())
+
+    script_synced = await _rebuild_script_after_removal(
+        db, project_id, segments, removed_order, previous_count
+    )
+
+    audio_dir = Path(settings.storage.base_dir) / "audio" / project_id
+    _shift_segment_audio_dirs(audio_dir / "segments", removed_order)
+    for seg in segments:
+        if not seg.audio_file:
+            continue
+        moved = audio_dir / "segments" / f"seg_{seg.segment_order:03d}" / "speech.mp3"
+        seg.audio_file = str(moved) if moved.exists() else None
+
+    chunks_dir = audio_dir / "chunks"
+    meta = TTSProvider.load_chunks_json(chunks_dir)
+    if not meta:
+        return {"script_synced": script_synced, "chunks_synced": False,
+                "audio_duration": None}
+
+    chunks = meta["chunks"]
+    body_indexes = [i for i, c in enumerate(chunks)
+                    if c.get("type") not in CHUNK_META_TYPES]
+    if len(body_indexes) != previous_count or not 0 <= removed_order < previous_count:
+        # 分段和段落本来就对不上(旧的整篇切块模式),无从判断该删哪一段
+        logger.warning(
+            "删除段落 %d 后未能同步音频分段:分段有 %d 段,段落有 %d 个",
+            removed_order, len(body_indexes), previous_count,
+        )
+        return {"script_synced": script_synced, "chunks_synced": False,
+                "audio_duration": None}
+
+    dropped = chunks.pop(body_indexes[removed_order])
+    (chunks_dir / dropped["file"]).unlink(missing_ok=True)
+    _renumber_chunks(chunks_dir, chunks)
+    TTSProvider._save_chunks_json(
+        chunks_dir, chunks, meta.get("voice_id", ""), meta.get("use_icl", False),
+        voice_display=meta.get("voice_display", ""),
+    )
+
+    duration = await _reconcat_after_removal(db, project_id, chunks_dir, chunks,
+                                             audio_dir / "speech.mp3")
+    logger.info("删除段落 %d:口播稿同步=%s,剩余分段 %d,重新拼接=%s",
+                removed_order, script_synced, len(chunks),
+                f"{duration:.1f}s" if duration is not None else "跳过")
+    return {"script_synced": script_synced, "chunks_synced": True,
+            "audio_duration": duration}
+
+
+async def _reconcat_after_removal(db, project_id: str, chunks_dir: Path,
+                                  chunks: list[dict], output_path: Path) -> float | None:
+    """把剩下的分段重新拼成整段音频,并更新 AudioAsset 的时长。
+
+    缺分段音频时跳过(返回 None),让调用方提示用户自己去音频页重新拼接,
+    总比拼出一段缺东少西的成品好。
+    """
+    chunk_paths = [chunks_dir / c["file"] for c in chunks]
+    missing = [p.name for p in chunk_paths if not p.exists()]
+    if not chunk_paths or missing:
+        logger.warning("删除段落后跳过重新拼接:缺少分段音频 %s", missing or "(无分段)")
+        return None
+
+    duration = await TTSProvider._concat_audio(chunk_paths, output_path)
+
+    result = await db.execute(
+        select(AudioAsset).where(AudioAsset.project_id == project_id)
+    )
+    audio = result.scalar_one_or_none()
+    if audio:
+        audio.file_path = str(output_path)
+        audio.duration = duration
+    return duration
+
+
 class AudioService:
     """Handles TTS audio generation and manual audio upload."""
 
@@ -791,10 +955,14 @@ class AudioService:
                 .order_by(Segment.segment_order)
             )
             segments = list(seg_result.scalars().all())
-            if segments and segments[0].script_text:
-                for i, seg in enumerate(segments):
-                    if i < len(meta["chunks"]):
-                        seg.duration_hint = meta["chunks"][i].get("duration", 0)
+            # 分段下标 ≠ 段落下标:片头/片尾也占分段,要换算后再写回时长,
+            # 否则有片头的项目每段都会拿到前一段的时长,视频排版整体错位。
+            chunks = meta["chunks"]
+            if chunks_align_with_segments(chunks, segments):
+                for ci, chunk in enumerate(chunks):
+                    seg_index = chunk_segment_index(chunks, ci)
+                    if seg_index is not None and 0 <= seg_index < len(segments):
+                        segments[seg_index].duration_hint = chunk.get("duration", 0)
 
             await db.commit()
 

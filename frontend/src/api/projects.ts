@@ -1,5 +1,5 @@
 import apiClient from './client'
-import type { Project, ProjectDetail, PaginatedResponse, Article, Segment, Script, AudioAsset, VideoOutput, ImageAsset } from '../types/project'
+import type { Project, ProjectDetail, PaginatedResponse, Article, Segment, SegmentDeleteResult, Script, AudioAsset, VideoOutput, ImageAsset } from '../types/project'
 
 export const projectsApi = {
   list(page = 1, pageSize = 20, status?: string) {
@@ -60,7 +60,7 @@ export const projectsApi = {
     return apiClient.post<Segment>(`/projects/${projectId}/segments`, data)
   },
   deleteSegment(projectId: string, segmentId: string) {
-    return apiClient.delete(`/projects/${projectId}/segments/${segmentId}`)
+    return apiClient.delete<SegmentDeleteResult>(`/projects/${projectId}/segments/${segmentId}`)
   },
   regenerateSegmentScript(projectId: string, segmentId: string) {
     return apiClient.post<Segment>(`/projects/${projectId}/segments/${segmentId}/script/regenerate`, null, {

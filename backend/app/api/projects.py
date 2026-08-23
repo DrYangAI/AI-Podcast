@@ -512,7 +512,11 @@ async def update_segment(project_id: str, segment_id: str, data: SegmentUpdate,
 @router.delete("/{project_id}/segments/{segment_id}")
 async def delete_segment(project_id: str, segment_id: str,
                          db: AsyncSession = Depends(get_db)):
-    """Delete a segment (and its image, via cascade), then close the gap in ordering."""
+    """Delete a segment along with everything derived from it.
+
+    段落删掉之后,它在整篇口播稿里的那一段、音频分段(chunks.json + mp3)和拼好的
+    整段语音也要一起去掉,否则视频里还会念到已删的内容。图片走 cascade。
+    """
     result = await db.execute(
         select(Segment).where(Segment.id == segment_id, Segment.project_id == project_id)
     )
@@ -534,8 +538,23 @@ async def delete_segment(project_id: str, segment_id: str,
     for seg in later_result.scalars().all():
         seg.segment_order -= 1
         await db.flush()
+    count_result = await db.execute(
+        select(func.count()).select_from(Segment).where(Segment.project_id == project_id)
+    )
+    previous_count = count_result.scalar() or 0
 
-    return {"status": "ok"}
+
+    from ..services.audio_service import sync_after_segment_removed
+    try:
+        sync = await sync_after_segment_removed(db, project_id, removed_order, previous_count)
+    except Exception:
+        # 段落本身已经删掉了,音频没收拾干净不该让整个删除失败;
+        # 返回 chunks_synced=False,前端提示用户去音频页重新拼接。
+        logger.exception("Failed to sync script/audio after deleting segment")
+        sync = {"script_synced": False, "chunks_synced": False, "audio_duration": None}
+    await db.flush()
+
+    return {"status": "ok", **sync}
 
 
 @router.post("/{project_id}/segments/{segment_id}/script/regenerate", response_model=SegmentResponse)

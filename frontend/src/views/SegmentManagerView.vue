@@ -68,7 +68,7 @@ async function submitAdd() {
 async function handleDelete(segment: any) {
   try {
     await ElMessageBox.confirm(
-      `确定删除段落 ${segment.segment_order + 1} 吗？对应的图片也会一并删除。`,
+      `确定删除段落 ${segment.segment_order + 1} 吗？对应的图片、口播稿和音频也会一并删除。`,
       '删除确认',
       { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
     )
@@ -77,9 +77,20 @@ async function handleDelete(segment: any) {
   }
   deletingSet.value = new Set(deletingSet.value).add(segment.id)
   try {
-    await projectsApi.deleteSegment(projectId.value, segment.id)
+    const { data } = await projectsApi.deleteSegment(projectId.value, segment.id)
     await store.loadSegments(projectId.value)
-    ElMessage.success('段落已删除')
+    if (data.script_synced === false) {
+      ElMessage.warning('段落已删除，但口播稿和段落对不上，没有动它，请手动检查口播稿')
+    } else if (data.audio_duration !== null) {
+      ElMessage.success('段落、口播稿和对应音频已删除，整段语音已重新拼接')
+    } else if (data.chunks_synced) {
+      ElMessage.warning('段落、口播稿和对应音频已删除，但整段语音未能重新拼接，请到语音页手动拼接')
+    } else if (data.script_synced) {
+      // 音频还没生成，或分段是旧的“整篇切块”模式，对不上段落
+      ElMessage.success('段落和口播稿已删除')
+    } else {
+      ElMessage.success('段落已删除')
+    }
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || '删除失败')
   } finally {
