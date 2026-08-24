@@ -220,12 +220,21 @@ const previewStyles = computed(() => {
     Object.assign(titleBgInline, {
       // 透明度只作用于底色：后端只给填充色带 alpha，文字始终不透明
       backgroundColor: hexToRgba(ps.portrait_title_bg_color, ps.portrait_title_bg_opacity),
-      padding: `${pad}px ${pad * 2}px`,
+      // 后端 drawtext 的 boxborderw 是四周等宽,这里也用等宽内边距,别再左右加倍,
+      // 否则预览底条比成片更宽
+      padding: `${pad}px`,
       borderRadius: Math.round(ps.portrait_title_bg_radius * s) + 'px',
       display: 'inline-block',
       transform: skew ? `skewX(-${skew}deg)` : 'none',
     })
   }
+  // 矩形底条走 drawtext:y 是文字顶、box 往上外扩 boxborderw,行距≈0.97×字号;
+  // 平行四边形走 title_overlay.py:PNG 叠在 y=title_y(条顶=title_y),行高=字号+8。
+  // 两条路径的锚点和行距不同,预览要分别对齐。
+  const rectBox = ps.portrait_title_bg_enabled && !isParallelogram
+  const titleLineHeight = (ps.portrait_title_bg_enabled && isParallelogram)
+    ? ((ps.portrait_title_font_size + 8) / Math.max(ps.portrait_title_font_size, 1)).toFixed(3)
+    : '0.97'
   // 后端只把背景画成平行四边形，文字是正的；预览里把文字反向斜回来对齐
   const counterSkew = skew ? { display: 'inline-block', transform: `skewX(${skew}deg)` } : {}
 
@@ -257,7 +266,10 @@ const previewStyles = computed(() => {
     },
     title: {
       position: 'absolute' as const,
-      top: Math.round(ps.portrait_title_y * s) + 'px',
+      // 矩形底条:drawtext 的 y 是【文字顶】,box 再往上外扩 boxborderw;预览把条顶
+      // 对齐到 title_y - padding,文字顶才落在 title_y。平行四边形/无底条:条顶(或
+      // 文字顶)本就在 title_y,不偏移。
+      top: Math.round((ps.portrait_title_y - (rectBox ? ps.portrait_title_bg_padding : 0)) * s) + 'px',
       left: '0',
       right: '0',
       textAlign: 'center' as const,
@@ -266,7 +278,9 @@ const previewStyles = computed(() => {
       fontWeight: 'bold' as const,
       textShadow: shadowParts.join(', ') || 'none',
       padding: '0 6px',
-      lineHeight: '1.3',
+      // 行高对齐后端:矩形 drawtext(line_spacing=0)每行约 0.965×字号→用 0.97;
+      // 平行四边形 overlay 每行=字号+8。1.3 会让多行标题明显偏高。
+      lineHeight: titleLineHeight,
       // overlay 模式后端按手动换行分段+像素折行,预览用 pre-wrap(保留手动 \n、
       // 再按宽度自然折);矩形/无底条走 drawtext,已在 previewTitleDisplay 里按字号
       // 显式折好,用 pre 只按给定换行渲染、不再按宽度二次折,和成片"照给定行渲染、
@@ -283,7 +297,7 @@ const previewStyles = computed(() => {
       fontSize: Math.max(7, Math.round(ps.portrait_sub_title_font_size * s)) + 'px',
       color: ps.portrait_sub_title_color,
       padding: '0 6px',
-      lineHeight: '1.3',
+      lineHeight: '0.97',  // 与标题一致,对齐 drawtext 行距
       // 副标题后端也会按字号折行(最多两行),预览用 pre 只按显式换行渲染
       whiteSpace: 'pre' as const,
       overflow: 'hidden',
