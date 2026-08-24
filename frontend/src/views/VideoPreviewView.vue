@@ -129,32 +129,40 @@ function charsPerLine(fontSize: number): number {
   return Math.max(4, Math.floor(usable / Math.max(fontSize, 1)))
 }
 
+// 与后端 portrait_service._wrap_cjk 同一套规则:先尊重用户手动的回车(\n)分段,
+// 每段再按字数自动折,标点不落行首,总行数超 maxLines 则截断收 …
 function wrapCjk(text: string, maxChars: number, maxLines: number): string[] {
-  const t = (text || '').trim()
-  if (!t) return []
-  if (maxChars <= 0) return [t]
-  const chars = Array.from(t)
+  if (!(text || '').trim()) return []
   const lines: string[] = []
-  let cur = ''
-  let n = 0
-  for (const ch of chars) {
-    cur += ch
-    n++
-    if (n >= maxChars) { lines.push(cur); cur = ''; n = 0 }
-  }
-  if (cur) lines.push(cur)
-  const fixed: string[] = []
-  for (let ln of lines) {
-    while (ln && LEADING_PUNCT.includes(ln[0]) && fixed.length) {
-      fixed[fixed.length - 1] += ln[0]
-      ln = ln.slice(1)
+  for (const paraRaw of (text || '').split('\n')) {
+    const para = paraRaw.trim()
+    if (!para) continue
+    if (maxChars <= 0) { lines.push(para); continue }
+    const chunks: string[] = []
+    let cur = ''
+    let n = 0
+    for (const ch of Array.from(para)) {
+      cur += ch
+      n++
+      if (n >= maxChars) { chunks.push(cur); cur = ''; n = 0 }
     }
-    if (ln) fixed.push(ln)
+    if (cur) chunks.push(cur)
+    const fixed: string[] = []
+    for (let ln of chunks) {
+      while (ln && LEADING_PUNCT.includes(ln[0]) && fixed.length) {
+        fixed[fixed.length - 1] += ln[0]
+        ln = ln.slice(1)
+      }
+      if (ln) fixed.push(ln)
+    }
+    if (fixed.length) lines.push(...fixed); else lines.push(para)
   }
-  let out = fixed.length ? fixed : [t]
+  let out = lines.length ? lines : [text.trim()]
   if (out.length > maxLines) {
     out = out.slice(0, maxLines)
-    out[maxLines - 1] = out[maxLines - 1].slice(0, Math.max(1, maxChars - 1)) + '…'
+    out[maxLines - 1] = maxChars > 0
+      ? out[maxLines - 1].slice(0, Math.max(1, maxChars - 1)) + '…'
+      : out[maxLines - 1] + '…'
   }
   return out
 }
@@ -245,6 +253,7 @@ const previewStyles = computed(() => {
       color: ps.portrait_sub_title_color,
       fontWeight: 'normal' as const,
       lineHeight: '1.3',
+      whiteSpace: 'pre-wrap' as const,  // 保留副标题手动换行
     },
     title: {
       position: 'absolute' as const,
@@ -258,11 +267,11 @@ const previewStyles = computed(() => {
       textShadow: shadowParts.join(', ') || 'none',
       padding: '0 6px',
       lineHeight: '1.3',
-      // overlay 模式后端按像素折行,预览用 CSS 自然换行(normal);矩形/无底条走
-      // drawtext,已在 previewTitleDisplay 里按字号显式折好。用 pre(而非 pre-line):
-      // 只按显式换行渲染、不再按宽度二次折,和后端 drawtext"照给定行渲染、超宽才裁"
-      // 一致 —— pre-line 会把标点回拉后略超条宽的那行再折一次,比成片多一行
-      whiteSpace: (ps.portrait_title_bg_enabled && isParallelogram ? 'normal' : 'pre') as const,
+      // overlay 模式后端按手动换行分段+像素折行,预览用 pre-wrap(保留手动 \n、
+      // 再按宽度自然折);矩形/无底条走 drawtext,已在 previewTitleDisplay 里按字号
+      // 显式折好,用 pre 只按给定换行渲染、不再按宽度二次折,和成片"照给定行渲染、
+      // 超宽才裁"一致
+      whiteSpace: (ps.portrait_title_bg_enabled && isParallelogram ? 'pre-wrap' : 'pre') as const,
       overflow: 'hidden',
     },
     subTitle: {
@@ -772,7 +781,8 @@ function formatDuration(seconds: number | null) {
             <el-divider content-position="left">主标题</el-divider>
             <el-form-item label="标题文本">
               <el-input v-model="portraitSettings.portrait_title_text"
-                placeholder="留空则使用项目标题"
+                type="textarea" :autosize="{ minRows: 1, maxRows: 4 }"
+                placeholder="留空则使用项目标题；按回车可手动换行"
                 maxlength="30" show-word-limit />
             </el-form-item>
             <el-form-item label="标题字号">
@@ -860,7 +870,8 @@ function formatDuration(seconds: number | null) {
             <el-divider content-position="left">副标题</el-divider>
             <el-form-item label="副标题文本">
               <el-input v-model="portraitSettings.portrait_sub_title_text"
-                placeholder="留空则不显示副标题"
+                type="textarea" :autosize="{ minRows: 1, maxRows: 3 }"
+                placeholder="留空则不显示副标题；按回车可手动换行"
                 maxlength="40" show-word-limit />
             </el-form-item>
             <el-form-item label="副标题字号">

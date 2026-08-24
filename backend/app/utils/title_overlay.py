@@ -30,10 +30,24 @@ def _hex_to_rgba(hex_color: str, opacity: float = 1.0) -> tuple[int, int, int, i
 
 
 def _wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[str]:
-    """Wrap text to fit within max_width, splitting at natural points."""
+    """Wrap text to fit within max_width, splitting at natural points.
+
+    先尊重用户手动敲的回车(\\n):每一段单独处理,过宽的段再按中点自动折。
+    """
     if not text:
         return []
 
+    lines: list[str] = []
+    for para in text.split("\n"):
+        para = para.strip()
+        if not para:
+            continue
+        lines.extend(_wrap_one(para, font, max_width))
+    return lines
+
+
+def _wrap_one(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[str]:
+    """把单独一段(不含手动换行)按 max_width 折成最多两行。"""
     # Try single line first
     bbox = font.getbbox(text)
     if bbox[2] - bbox[0] <= max_width:

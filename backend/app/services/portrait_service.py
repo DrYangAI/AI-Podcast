@@ -46,41 +46,54 @@ _LEADING_PUNCT = "，。！？、；：,.!?;:…）】」》"
 
 
 def _wrap_cjk(text: str, max_chars: int, max_lines: int = 3) -> list[str]:
-    """把标题/副标题按每行 max_chars 个字折成多行。
+    """把标题/副标题折成多行。
 
-    drawtext 不会自己换行,长标题会横着顶出画面被裁掉,所以在送进 ffmpeg 之前
-    先手动折。中文是方块字,按字数折足够准;标点尽量收在行尾、不落在行首。
-    超过 max_lines 行则截断,末行以 … 收尾。
+    优先尊重用户在标题文本里手动敲的回车(\\n):先按手动换行分段,每段再按每行
+    max_chars 个字自动折(防止某一段仍然过长顶出画面)。drawtext 自己不换行,所以
+    折行必须在送进 ffmpeg 之前做好。中文是方块字,按字数折足够准;标点尽量收在行尾、
+    不落在行首。总行数超过 max_lines 则截断,末行以 … 收尾。
     """
-    text = (text or "").strip()
-    if not text:
+    if not (text or "").strip():
         return []
-    if max_chars <= 0:
-        return [text]
 
     lines: list[str] = []
-    cur = ""
-    for ch in text:
-        cur += ch
-        if len(cur) >= max_chars:
-            lines.append(cur)
-            cur = ""
-    if cur:
-        lines.append(cur)
+    for para in text.split("\n"):
+        para = para.strip()
+        if not para:
+            continue  # 跳过空行(连按两次回车不产生空白行)
+        if max_chars <= 0:
+            lines.append(para)
+            continue
 
-    # 把落在行首的标点挪回上一行末尾(允许该行略微超出 max_chars 一个字)
-    fixed: list[str] = []
-    for ln in lines:
-        while ln and ln[0] in _LEADING_PUNCT and fixed:
-            fixed[-1] += ln[0]
-            ln = ln[1:]
-        if ln:
-            fixed.append(ln)
-    lines = fixed or [text]
+        # 段内按字数贪心折
+        chunks: list[str] = []
+        cur = ""
+        for ch in para:
+            cur += ch
+            if len(cur) >= max_chars:
+                chunks.append(cur)
+                cur = ""
+        if cur:
+            chunks.append(cur)
 
+        # 把落在行首的标点挪回上一行末尾(仅在本段内,不跨手动换行)
+        fixed: list[str] = []
+        for ln in chunks:
+            while ln and ln[0] in _LEADING_PUNCT and fixed:
+                fixed[-1] += ln[0]
+                ln = ln[1:]
+            if ln:
+                fixed.append(ln)
+        lines.extend(fixed or [para])
+
+    if not lines:
+        return [text.strip()]
     if len(lines) > max_lines:
         lines = lines[:max_lines]
-        lines[-1] = lines[-1][: max(1, max_chars - 1)] + "…"
+        if max_chars > 0:
+            lines[-1] = lines[-1][: max(1, max_chars - 1)] + "…"
+        else:
+            lines[-1] = lines[-1] + "…"
     return lines
 
 
