@@ -41,6 +41,53 @@ HEADER_HEIGHT = 200
 VIDEO_Y_OFFSET = 480  # 标题(200) + 间距(280) → 视频从 480 开始
 SUBTITLE_AREA_TOP = VIDEO_Y_OFFSET + VIDEO_HEIGHT  # = 1088
 
+# 折行时不让标点落在行首(会另起一行只剩一个逗号很难看)
+_LEADING_PUNCT = "，。！？、；：,.!?;:…）】」》"
+
+
+def _wrap_cjk(text: str, max_chars: int, max_lines: int = 3) -> list[str]:
+    """把标题/副标题按每行 max_chars 个字折成多行。
+
+    drawtext 不会自己换行,长标题会横着顶出画面被裁掉,所以在送进 ffmpeg 之前
+    先手动折。中文是方块字,按字数折足够准;标点尽量收在行尾、不落在行首。
+    超过 max_lines 行则截断,末行以 … 收尾。
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    if max_chars <= 0:
+        return [text]
+
+    lines: list[str] = []
+    cur = ""
+    for ch in text:
+        cur += ch
+        if len(cur) >= max_chars:
+            lines.append(cur)
+            cur = ""
+    if cur:
+        lines.append(cur)
+
+    # 把落在行首的标点挪回上一行末尾(允许该行略微超出 max_chars 一个字)
+    fixed: list[str] = []
+    for ln in lines:
+        while ln and ln[0] in _LEADING_PUNCT and fixed:
+            fixed[-1] += ln[0]
+            ln = ln[1:]
+        if ln:
+            fixed.append(ln)
+    lines = fixed or [text]
+
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        lines[-1] = lines[-1][: max(1, max_chars - 1)] + "…"
+    return lines
+
+
+def _escape_drawtext(s: str) -> str:
+    """转义 drawtext text 里的特殊字符。"""
+    return s.replace("\\", "\\\\").replace("'", "'\\''").replace(":", "\\:")
+
 
 class PortraitCompositeService:
     """Composites a 16:9 video into a 9:16 portrait layout."""
@@ -214,12 +261,8 @@ class PortraitCompositeService:
         ④ drawtext for title
         ⑤ subtitles in bottom area
         """
-        # 转义标题中的特殊字符（FFmpeg drawtext 格式）
-        safe_title = title_text.replace("\\", "\\\\").replace("'", "'\\''").replace(":", "\\:")
-        # 截断过长标题
-        if len(title_text) > 30:
-            safe_title_display = title_text[:28] + "…"
-            safe_title = safe_title_display.replace("\\", "\\\\").replace("'", "'\\''").replace(":", "\\:")
+        # 标题的折行/转义放到 drawtext 分支里做(overlay 模式用 PNG,不需要),
+        # 因为要用到下面读出来的 title_font_size 才能算每行放几个字。
 
         # 从布局配置读取（可在前端调整）
         title_font_size = portrait_layout.get("title_font_size", 36)
@@ -302,6 +345,12 @@ class PortraitCompositeService:
                     f":boxborderw={title_bg_padding}"
                 )
 
+            # 长标题按字号折行(drawtext 自己不换行,超宽会被裁);多行用真实换行符
+            # 连接,text_align=C 让每行在底条内居中。
+            title_cpl = chars_per_line(title_font_size, PORTRAIT_WIDTH)
+            title_lines = _wrap_cjk(title_text, title_cpl, max_lines=3)
+            safe_title = "\n".join(_escape_drawtext(l) for l in title_lines)
+
             filter_parts.append(
                 f"[{current_label}]drawtext="
                 f"text='{safe_title}':"
@@ -309,6 +358,7 @@ class PortraitCompositeService:
                 f"fontsize={title_font_size}:"
                 f"fontcolor={title_color}:"
                 f"borderw={title_outline_w}:bordercolor={title_outline_color}:"
+                f"text_align=C:"
                 f"x=(w-text_w)/2:"
                 f"y={title_y}"
                 f"{shadow_part}{box_part}"
@@ -318,10 +368,9 @@ class PortraitCompositeService:
 
             # 副标题
             if sub_title_text and sub_title_text.strip():
-                safe_sub = sub_title_text.replace("\\", "\\\\").replace("'", "'\\''").replace(":", "\\:")
-                if len(sub_title_text) > 40:
-                    safe_sub_display = sub_title_text[:38] + "…"
-                    safe_sub = safe_sub_display.replace("\\", "\\\\").replace("'", "'\\''").replace(":", "\\:")
+                sub_cpl = chars_per_line(sub_title_font_size, PORTRAIT_WIDTH)
+                sub_lines = _wrap_cjk(sub_title_text, sub_cpl, max_lines=2)
+                safe_sub = "\n".join(_escape_drawtext(l) for l in sub_lines)
                 sub_box_part = ""
                 if title_bg_enabled:
                     sub_box_part = (
@@ -334,6 +383,7 @@ class PortraitCompositeService:
                     f"fontfile='{font_file}':"
                     f"fontsize={sub_title_font_size}:"
                     f"fontcolor={sub_title_color}:"
+                    f"text_align=C:"
                     f"x=(w-text_w)/2:"
                     f"y={sub_title_y}"
                     f"{sub_box_part}"

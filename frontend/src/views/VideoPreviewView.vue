@@ -119,6 +119,60 @@ const titleOverlayMode = computed(() =>
   portraitSettings.portrait_title_bg_shape !== 'rect'
 )
 
+// 矩形/无底条走后端 drawtext,长标题会按字号折行(portrait_service._wrap_cjk +
+// chars_per_line)。预览用同样的规则折,才能如实反映成片会折成几行。
+const SUBTITLE_SIDE_MARGIN = 40
+const LEADING_PUNCT = '，。！？、；：,.!?;:…）】」》'
+
+function charsPerLine(fontSize: number): number {
+  const usable = Math.max(PORTRAIT_FULL_W - SUBTITLE_SIDE_MARGIN * 2, fontSize)
+  return Math.max(4, Math.floor(usable / Math.max(fontSize, 1)))
+}
+
+function wrapCjk(text: string, maxChars: number, maxLines: number): string[] {
+  const t = (text || '').trim()
+  if (!t) return []
+  if (maxChars <= 0) return [t]
+  const chars = Array.from(t)
+  const lines: string[] = []
+  let cur = ''
+  let n = 0
+  for (const ch of chars) {
+    cur += ch
+    n++
+    if (n >= maxChars) { lines.push(cur); cur = ''; n = 0 }
+  }
+  if (cur) lines.push(cur)
+  const fixed: string[] = []
+  for (let ln of lines) {
+    while (ln && LEADING_PUNCT.includes(ln[0]) && fixed.length) {
+      fixed[fixed.length - 1] += ln[0]
+      ln = ln.slice(1)
+    }
+    if (ln) fixed.push(ln)
+  }
+  let out = fixed.length ? fixed : [t]
+  if (out.length > maxLines) {
+    out = out.slice(0, maxLines)
+    out[maxLines - 1] = out[maxLines - 1].slice(0, Math.max(1, maxChars - 1)) + '…'
+  }
+  return out
+}
+
+// overlay(平行四边形)模式后端按像素折成最多两行,预览用 CSS 自然换行即可;
+// 矩形模式才需要按字号显式折行。用 \n 连接 + white-space:pre-line 渲染。
+const previewTitleDisplay = computed(() => {
+  if (titleOverlayMode.value) return previewTitleText.value
+  const cpl = charsPerLine(portraitSettings.portrait_title_font_size)
+  return wrapCjk(previewTitleText.value, cpl, 3).join('\n')
+})
+
+const previewSubTitleDisplay = computed(() => {
+  if (titleOverlayMode.value) return previewSubTitleText.value
+  const cpl = charsPerLine(portraitSettings.portrait_sub_title_font_size)
+  return wrapCjk(previewSubTitleText.value, cpl, 2).join('\n')
+})
+
 // 兼容 #RGB 简写；认不出来的值（空串、rgba(...) 等）原样返回，
 // 总比拼出 rgba(NaN,NaN,NaN) 让浏览器整条丢弃、预览里底条凭空消失强
 function hexToRgba(hex: string, alpha: number): string {
@@ -204,9 +258,11 @@ const previewStyles = computed(() => {
       textShadow: shadowParts.join(', ') || 'none',
       padding: '0 6px',
       lineHeight: '1.3',
-      // overlay 模式后端会把标题折成最多两行，预览跟着折；drawtext 模式不折行，
-      // 超出画布就是会被裁掉，预览保持 nowrap 如实反映
-      whiteSpace: (ps.portrait_title_bg_enabled && isParallelogram ? 'normal' : 'nowrap') as const,
+      // overlay 模式后端按像素折行,预览用 CSS 自然换行(normal);矩形/无底条走
+      // drawtext,已在 previewTitleDisplay 里按字号显式折好。用 pre(而非 pre-line):
+      // 只按显式换行渲染、不再按宽度二次折,和后端 drawtext"照给定行渲染、超宽才裁"
+      // 一致 —— pre-line 会把标点回拉后略超条宽的那行再折一次,比成片多一行
+      whiteSpace: (ps.portrait_title_bg_enabled && isParallelogram ? 'normal' : 'pre') as const,
       overflow: 'hidden',
     },
     subTitle: {
@@ -219,9 +275,9 @@ const previewStyles = computed(() => {
       color: ps.portrait_sub_title_color,
       padding: '0 6px',
       lineHeight: '1.3',
-      whiteSpace: 'nowrap' as const,
+      // 副标题后端也会按字号折行(最多两行),预览用 pre 只按显式换行渲染
+      whiteSpace: 'pre' as const,
       overflow: 'hidden',
-      textOverflow: 'ellipsis',
     },
     video: {
       position: 'absolute' as const,
@@ -686,14 +742,14 @@ function formatDuration(seconds: number | null) {
             <!-- 主标题（背景装饰自动包裹文字） -->
             <div :style="previewStyles.title">
               <span :style="previewStyles.titleBgInline">
-                <span :style="previewStyles.titleTextInline">{{ previewTitleText }}</span>
+                <span :style="previewStyles.titleTextInline">{{ previewTitleDisplay }}</span>
                 <!-- 平行四边形底条：副标题和主标题共用一个形状，就画在标题下方 -->
                 <span v-if="titleOverlayMode && previewSubTitleText" :style="previewStyles.subInBar">{{ previewSubTitleText }}</span>
               </span>
             </div>
             <!-- 副标题（矩形/无底条时各自绝对定位） -->
             <div v-if="!titleOverlayMode && previewSubTitleText" :style="previewStyles.subTitle">
-              {{ previewSubTitleText }}
+              {{ previewSubTitleDisplay }}
             </div>
             <!-- 16:9 视频占位 -->
             <div :style="previewStyles.video">
