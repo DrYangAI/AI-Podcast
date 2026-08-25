@@ -93,6 +93,7 @@ const coverAspect = computed(() => {
 onMounted(async () => {
   await loadAssets()
   await loadSegmentImages()
+  await loadWechatConfig()
   // Resume polling if covers are currently generating
   const hasGenerating = assets.value.some(a => a.cover_status === 'generating')
   if (hasGenerating) {
@@ -326,6 +327,59 @@ function getSegmentImageUrl(img: ImageAsset): string {
   }
   return path
 }
+
+// ── 微信公众号图文草稿 ──
+const wechatConfigured = ref(false)
+const wechatAppid = ref('')
+const wechatSecret = ref('')          // 只在编辑时用;不回显已存的 secret
+const wechatConfigOpen = ref(false)
+const wechatSavingConfig = ref(false)
+const wechatIncludeVideo = ref(true)
+const wechatBusy = ref(false)
+const wechatResult = ref<{ draft_media_id: string; video_uploaded: boolean } | null>(null)
+
+async function loadWechatConfig() {
+  try {
+    const { data } = await publishApi.getWechatConfig()
+    wechatConfigured.value = data.configured
+    wechatAppid.value = data.appid
+  } catch {
+    // 未配置时忽略
+  }
+}
+
+async function saveWechatConfig() {
+  if (!wechatAppid.value.trim()) {
+    ElMessage.warning('请填写 AppID')
+    return
+  }
+  wechatSavingConfig.value = true
+  try {
+    const { data } = await publishApi.saveWechatConfig(wechatAppid.value.trim(), wechatSecret.value.trim())
+    wechatConfigured.value = data.configured
+    wechatSecret.value = ''
+    wechatConfigOpen.value = false
+    ElMessage.success('公众号配置已保存')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '保存失败')
+  } finally {
+    wechatSavingConfig.value = false
+  }
+}
+
+async function createWechatDraft() {
+  wechatBusy.value = true
+  wechatResult.value = null
+  try {
+    const { data } = await publishApi.createWechatDraft(projectId.value, wechatIncludeVideo.value)
+    wechatResult.value = { draft_media_id: data.draft_media_id, video_uploaded: data.video_uploaded }
+    ElMessage.success('图文草稿已生成,请到公众号后台「草稿箱」查看')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '生成草稿失败')
+  } finally {
+    wechatBusy.value = false
+  }
+}
 </script>
 
 <template>
@@ -532,6 +586,62 @@ function getSegmentImageUrl(img: ImageAsset): string {
           </el-card>
         </el-col>
       </el-row>
+
+      <!-- 微信公众号：一键生成图文草稿 -->
+      <el-card shadow="never" style="margin-top: 20px;">
+        <template #header>
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span style="font-weight: 600;">
+              微信公众号
+              <el-tag v-if="wechatConfigured" type="success" size="small" style="margin-left: 8px;">已配置</el-tag>
+              <el-tag v-else type="info" size="small" style="margin-left: 8px;">未配置</el-tag>
+            </span>
+            <el-button size="small" @click="wechatConfigOpen = !wechatConfigOpen">
+              {{ wechatConfigOpen ? '收起' : (wechatConfigured ? '修改凭证' : '配置凭证') }}
+            </el-button>
+          </div>
+        </template>
+
+        <el-alert type="info" :closable="false" style="margin-bottom: 12px;">
+          自动把封面、标题、摘要、科普正文推到公众号，并生成一条<b>图文草稿</b>；成片视频会上传到<b>素材库</b>。
+          公众号图文里可播放的视频播放器无法由接口嵌入，需你在后台编辑草稿时手动拖入视频（一步）。<br/>
+          前提：①已认证的服务号/订阅号　②AppID + AppSecret　③你的公网 IP 已加入公众号「IP 白名单」。<b>只生成草稿，不会自动发布。</b>
+        </el-alert>
+
+        <el-collapse-transition>
+          <div v-show="wechatConfigOpen" style="margin-bottom: 12px; padding: 12px; background: #f5f7fa; border-radius: 6px;">
+            <el-form label-width="90px" @submit.prevent>
+              <el-form-item label="AppID">
+                <el-input v-model="wechatAppid" placeholder="公众号 AppID" />
+              </el-form-item>
+              <el-form-item label="AppSecret">
+                <el-input v-model="wechatSecret" type="password" show-password
+                  :placeholder="wechatConfigured ? '已保存，留空则不修改' : '公众号 AppSecret'" />
+              </el-form-item>
+              <el-form-item>
+                <el-button type="primary" size="small" :loading="wechatSavingConfig" @click="saveWechatConfig">
+                  保存凭证
+                </el-button>
+              </el-form-item>
+            </el-form>
+          </div>
+        </el-collapse-transition>
+
+        <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
+          <el-checkbox v-model="wechatIncludeVideo">同时把成片视频传到素材库</el-checkbox>
+          <el-button type="primary" :loading="wechatBusy" :disabled="!wechatConfigured"
+            @click="createWechatDraft">
+            <el-icon><Upload /></el-icon> 生成图文草稿
+          </el-button>
+          <span v-if="!wechatConfigured" style="font-size: 12px; color: #909399;">请先配置凭证</span>
+        </div>
+
+        <el-alert v-if="wechatResult" type="success" :closable="false" style="margin-top: 12px;">
+          草稿已生成（media_id: {{ wechatResult.draft_media_id }}）。
+          {{ wechatResult.video_uploaded ? '视频已进素材库，' : '' }}
+          请到公众号后台「草稿箱」查看、必要时手动插入视频后再发布。
+        </el-alert>
+      </el-card>
     </div>
 
     <!-- Cover prompt editing dialog -->

@@ -24,6 +24,18 @@ export interface CoverPrompt {
   prompt: string | null
 }
 
+export interface WeChatConfig {
+  configured: boolean
+  appid: string
+}
+
+export interface WeChatDraftResult {
+  draft_media_id: string
+  video_uploaded: boolean
+  cover_used: string
+  title: string
+}
+
 export const publishApi = {
   getAssets(projectId: string) {
     return apiClient.get<PublishAsset[]>(`/projects/${projectId}/publish-assets`)
@@ -58,5 +70,17 @@ export const publishApi = {
 
   updateCoverPrompt(projectId: string, prompt: string) {
     return apiClient.put<CoverPrompt>(`/projects/${projectId}/publish-assets/cover-prompt`, { prompt })
+  },
+
+  // ── 微信公众号图文草稿 ──
+  getWechatConfig() {
+    return apiClient.get<WeChatConfig>('/publish/wechat/config')
+  },
+  saveWechatConfig(appid: string, appSecret: string) {
+    return apiClient.put<WeChatConfig>('/publish/wechat/config', { appid, app_secret: appSecret })
+  },
+  createWechatDraft(projectId: string, includeVideo: boolean) {
+    return apiClient.post<WeChatDraftResult>(`/publish/wechat/draft/${projectId}`,
+      { include_video: includeVideo }, { timeout: 180000 })
   },
 }
