@@ -51,7 +51,11 @@ class WeChatAPIError(Exception):
         self.errcode = errcode
         self.errmsg = errmsg
         hint = _ERRCODE_HINTS.get(errcode)
-        msg = hint or f"微信接口错误 {errcode}: {errmsg}"
+        if hint:
+            # 保留微信原文:40164 的原文里会带上它实际看到的公网 IP,照抄进白名单最准
+            msg = f"{hint}(微信原文:{errmsg})" if errmsg else hint
+        else:
+            msg = f"微信接口错误 {errcode}: {errmsg}"
         super().__init__(msg)
         self.friendly = msg
 
