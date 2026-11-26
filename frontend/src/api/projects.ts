@@ -123,6 +123,12 @@ export const projectsApi = {
   concatenateAudioChunks(id: string) {
     return apiClient.post<any>(`/projects/${id}/audio/concatenate`)
   },
+  // 把所有分段导出成可读命名的文件夹并在文件管理器中打开
+  exportAudioChunks(id: string) {
+    return apiClient.post<{ folder: string; count: number; opened: boolean }>(
+      `/projects/${id}/audio/chunks/export`
+    )
+  },
 
   // Videos
   getVideos(id: string) {

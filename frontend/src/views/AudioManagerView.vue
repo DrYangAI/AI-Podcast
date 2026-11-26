@@ -385,6 +385,44 @@ function getChunkAudioUrl(chunk: AudioChunk) {
   return url + '?t=' + cacheBuster.value
 }
 
+// 触发浏览器下载:后端带 Content-Disposition，会存成可读的中文文件名
+function triggerDownload(url: string) {
+  const a = document.createElement('a')
+  a.href = url
+  a.rel = 'noopener'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+}
+
+// 下载单个分段音频(用后端接口，文件名形如「标题_第02段.mp3」)
+function downloadChunk(index: number) {
+  triggerDownload(`/api/v1/projects/${projectId.value}/audio/chunks/${index}/download`)
+}
+
+// 打包下载全部分段(zip)
+function downloadAllChunks() {
+  triggerDownload(`/api/v1/projects/${projectId.value}/audio/chunks/download-all`)
+}
+
+// 导出全部分段为可读命名的文件,并直接打开所在文件夹(本机最方便)
+const exportingChunks = ref(false)
+async function exportChunksToFolder() {
+  exportingChunks.value = true
+  try {
+    const { data } = await projectsApi.exportAudioChunks(projectId.value)
+    if (data.opened) {
+      ElMessage.success(`已导出 ${data.count} 段到「分段音频」文件夹并打开`)
+    } else {
+      ElMessage.success(`已导出 ${data.count} 段到：${data.folder}（请手动打开）`)
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '导出分段失败')
+  } finally {
+    exportingChunks.value = false
+  }
+}
+
 function chunkSpeedDeviation(chunk: AudioChunk): number {
   if (chunks.value.length < 2) return 0
   const speeds = chunks.value.map(c => c.speed).sort((a, b) => a - b)
@@ -629,14 +667,31 @@ async function handleConcatenate() {
       <template #header>
         <div style="display: flex; justify-content: space-between; align-items: center;">
           <span style="font-weight: 500;">分段管理 ({{ chunks.length }} 段)</span>
-          <el-button
-            type="primary"
-            size="small"
-            @click="handleConcatenate"
-            :loading="concatenating"
-          >
-            <el-icon><Connection /></el-icon> 重新拼接
-          </el-button>
+          <div style="display: flex; gap: 8px;">
+            <el-button
+              size="small"
+              @click="exportChunksToFolder"
+              :loading="exportingChunks"
+              title="把各分段导出成可读命名的文件（第01段.mp3…）并打开所在文件夹"
+            >
+              <el-icon><FolderOpened /></el-icon> 导出到文件夹
+            </el-button>
+            <el-button
+              size="small"
+              @click="downloadAllChunks"
+              title="打包成一个 zip 下载"
+            >
+              <el-icon><Download /></el-icon> 打包下载(zip)
+            </el-button>
+            <el-button
+              type="primary"
+              size="small"
+              @click="handleConcatenate"
+              :loading="concatenating"
+            >
+              <el-icon><Connection /></el-icon> 重新拼接
+            </el-button>
+          </div>
         </div>
       </template>
 
@@ -727,6 +782,14 @@ async function handleConcatenate() {
                 :disabled="chunkRegenerating !== null && chunkRegenerating !== chunk.index"
               >
                 重新生成
+              </el-button>
+              <el-button
+                size="small"
+                @click="downloadChunk(chunk.index)"
+                :disabled="chunk.stale"
+                :title="chunk.stale ? '文字已改，请先重新生成再下载' : '下载这一段音频'"
+              >
+                <el-icon><Download /></el-icon> 下载
               </el-button>
             </template>
           </div>

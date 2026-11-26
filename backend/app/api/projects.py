@@ -2,11 +2,14 @@
 
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile, File, Form
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -956,6 +959,155 @@ async def concatenate_audio_chunks(project_id: str):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return result
+
+
+def _safe_filename_part(text: str, max_len: int = 40) -> str:
+    """把任意文本清成能当文件名的片段(去掉非法字符、折叠空白、限长)。"""
+    cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '', text or '')
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned[:max_len] or "untitled"
+
+
+def _chunk_label(chunk: dict, index: int) -> str:
+    """分段的可读名:片头 / 片尾 / 第NN段。"""
+    ctype = chunk.get("type")
+    if ctype == "intro":
+        return "片头"
+    if ctype == "outro":
+        return "片尾"
+    return f"第{index + 1:02d}段"
+
+
+def _chunk_download_name(chunk: dict, index: int, project_title: str) -> str:
+    """单段音频的下载文件名,如「骨龄科普_第02段.mp3」「骨龄科普_片头.mp3」。"""
+    return f"{_safe_filename_part(project_title)}_{_chunk_label(chunk, index)}.mp3"
+
+
+async def _load_chunks_or_404(project_id: str) -> tuple[list[dict], Path]:
+    """取出某项目的分段列表和 chunks 目录,没有则 404。"""
+    from ..services.audio_service import AudioService
+    service = AudioService()
+    meta = await service.get_audio_chunks(project_id)
+    if not meta or not meta.get("chunks"):
+        raise HTTPException(status_code=404, detail="该项目还没有分段音频,请先生成语音")
+    chunks_dir = Path(get_settings().storage.base_dir) / "audio" / project_id / "chunks"
+    return meta["chunks"], chunks_dir
+
+
+@router.get("/{project_id}/audio/chunks/download-all")
+async def download_all_audio_chunks(project_id: str, db: AsyncSession = Depends(get_db)):
+    """把所有分段音频打包成一个 zip 下载,文件名按段落编号/片头片尾命名。"""
+    import io
+    import zipfile
+
+    chunks, chunks_dir = await _load_chunks_or_404(project_id)
+    project = await db.get(Project, project_id)
+    title = project.title if project else project_id
+
+    buf = io.BytesIO()
+    used: set[str] = set()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i, chunk in enumerate(chunks):
+            src = chunks_dir / chunk["file"]
+            if not src.exists():
+                continue
+            name = _chunk_download_name(chunk, i, title)
+            # 避免同名(清洗后标题相同、编号相同的极端情况)覆盖
+            if name in used:
+                stem, ext = name.rsplit(".", 1)
+                name = f"{stem}_{i}.{ext}"
+            used.add(name)
+            zf.write(src, arcname=name)
+    if not used:
+        raise HTTPException(status_code=404, detail="分段音频文件缺失,请重新生成语音")
+    buf.seek(0)
+
+    zip_name = f"{_safe_filename_part(title)}_分段音频.zip"
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=\"segments.zip\"; "
+                f"filename*=UTF-8''{quote(zip_name)}"
+            )
+        },
+    )
+
+
+@router.get("/{project_id}/audio/chunks/{chunk_index}/download")
+async def download_audio_chunk(project_id: str, chunk_index: int,
+                               db: AsyncSession = Depends(get_db)):
+    """下载单个分段的音频文件(带可读的中文文件名)。"""
+    chunks, chunks_dir = await _load_chunks_or_404(project_id)
+    if chunk_index < 0 or chunk_index >= len(chunks):
+        raise HTTPException(status_code=404, detail="分段序号超出范围")
+
+    chunk = chunks[chunk_index]
+    src = chunks_dir / chunk["file"]
+    if not src.exists():
+        raise HTTPException(status_code=404, detail="该分段音频文件不存在,请重新生成")
+
+    project = await db.get(Project, project_id)
+    title = project.title if project else project_id
+    return FileResponse(
+        path=str(src),
+        media_type="audio/mpeg",
+        filename=_chunk_download_name(chunk, chunk_index, title),
+    )
+
+
+@router.post("/{project_id}/audio/chunks/export")
+async def export_audio_chunks(project_id: str):
+    """把所有分段音频复制成一个「分段音频」文件夹(文件名可读:第01段.mp3 / 片头.mp3),
+    并直接在系统文件管理器里打开该文件夹。
+
+    磁盘上的分段本是 chunk_000.mp3 这种无意义名字,这里统一导出成可读名,方便直接
+    从文件夹里取用、拖拽、批量处理,免去逐个「另存为」。
+    """
+    import platform
+    import shutil
+    import subprocess
+
+    chunks, chunks_dir = await _load_chunks_or_404(project_id)
+    export_dir = (Path(get_settings().storage.base_dir) / "audio" / project_id / "分段音频")
+
+    # 每次导出前清空,避免删过/改过的段落留下残留文件
+    if export_dir.exists():
+        shutil.rmtree(export_dir, ignore_errors=True)
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    count = 0
+    used: set[str] = set()
+    for i, chunk in enumerate(chunks):
+        src = chunks_dir / chunk["file"]
+        if not src.exists():
+            continue
+        name = f"{_chunk_label(chunk, i)}.mp3"
+        if name in used:  # 极端情况下的重名保护
+            name = f"{_chunk_label(chunk, i)}_{i}.mp3"
+        used.add(name)
+        shutil.copy2(src, export_dir / name)
+        count += 1
+
+    if count == 0:
+        raise HTTPException(status_code=404, detail="分段音频文件缺失,请重新生成语音")
+
+    # 导出好之后直接打开文件夹;打不开也不影响文件已就绪
+    opened = True
+    try:
+        system = platform.system()
+        if system == "Darwin":
+            subprocess.Popen(["open", str(export_dir)])
+        elif system == "Windows":
+            subprocess.Popen(["explorer", str(export_dir)])
+        else:
+            subprocess.Popen(["xdg-open", str(export_dir)])
+    except Exception as e:
+        opened = False
+        logger.warning("导出分段音频后打开文件夹失败: %s", e)
+
+    return {"folder": str(export_dir), "count": count, "opened": opened}
 
 
 # --- Video endpoints ---
