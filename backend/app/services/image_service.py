@@ -11,6 +11,7 @@ from ..models import Project, Segment, ImageAsset, ProviderConfig
 from ..providers.base import ProviderType
 from ..providers.registry import ProviderRegistry
 from ..config import get_settings
+from .usage_service import record_usage
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +134,15 @@ class ImageService:
                                 status="completed",
                             )
                             db.add(image_asset)
+
+                        # 费用记账:每张成功出图记一笔(独立 session,不影响本事务)
+                        await record_usage(
+                            project_id=project_id, provider_type="image",
+                            provider_key=image_config.provider_key,
+                            model_id=response.model_used or model_id or "",
+                            unit="image", quantity=len(response.file_paths),
+                            label="段落配图",
+                        )
 
                 except Exception as e:
                     logger.error(f"Failed to generate image for segment {segment.id}: {e}")
@@ -280,6 +290,15 @@ class ImageService:
                             status="completed",
                         )
                         db.add(image_asset)
+
+                    # 费用记账:单段重新生成也要计费
+                    await record_usage(
+                        project_id=project_id, provider_type="image",
+                        provider_key=image_config.provider_key,
+                        model_id=response.model_used or model_id or "",
+                        unit="image", quantity=len(response.file_paths),
+                        label="段落配图(重生成)",
+                    )
 
             except Exception as e:
                 logger.error(f"Failed to regenerate image for segment {segment.id}: {e}")
