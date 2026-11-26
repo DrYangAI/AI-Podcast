@@ -417,13 +417,19 @@ class PortraitCompositeService:
                 f"PrimaryColour={pc},"
                 f"OutlineColour={oc},"
                 f"Outline={outline_width},"
-                f"MarginV={subtitle_margin_v},"
+                # 注意:字幕源是 SRT,ffmpeg 内部按 SSA v4 语义解析 Alignment
+                # (1/2/3=底部左中右, 5/6/7=顶部左中右, 9/10/11=中部左中右),
+                # 不是 ASS v4+ 的小键盘语义(8 在这里会变成"中部偏左")。
+                # 所以顶部居中要用 6。Alignment=6 + MarginV=画面高-距底边距:
+                # 让"距底边距"从字幕块【顶端】起算,单行/多行字幕顶端都在同一高度,
+                # 折行后向下延伸。(原来 Alignment=2 是底部对齐,单行字幕会比多行靠下。)
+                f"MarginV={PORTRAIT_HEIGHT - subtitle_margin_v},"
                 # WrapStyle=0 是 libass 的智能折行(两行尽量等长);配上左右留白,
                 # 太长的句子会在画面内折成多行,而不是横着顶出去被裁掉。
                 f"WrapStyle=0,"
                 f"MarginL={SUBTITLE_SIDE_MARGIN},"
                 f"MarginR={SUBTITLE_SIDE_MARGIN},"
-                f"Alignment=2,"
+                f"Alignment=6,"
                 f"PlayResX={PORTRAIT_WIDTH},"
                 f"PlayResY={PORTRAIT_HEIGHT}'"
                 f"[final]"

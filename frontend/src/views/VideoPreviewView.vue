@@ -317,7 +317,8 @@ const previewStyles = computed(() => {
     },
     subtitle: {
       position: 'absolute' as const,
-      bottom: Math.round(ps.portrait_subtitle_margin_v * s) + 'px',
+      // 与后端 libass 顶部对齐(Alignment=6)一致:距底边距从字幕【顶端】起算,折行向下延伸
+      top: Math.round((PORTRAIT_FULL_H - ps.portrait_subtitle_margin_v) * s) + 'px',
       left: '0',
       right: '0',
       textAlign: 'center' as const,
