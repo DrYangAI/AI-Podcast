@@ -184,11 +184,17 @@ async function saveVoiceSelection() {
 function startTtsPolling() {
   if (pollTimer) return  // 已在轮询
   loading.value = true
+  let lastFetchedDone = -1  // 上次拉取分段列表时的完成数
   pollTimer = setInterval(async () => {
     try {
       try {
         const { data: prog } = await projectsApi.getTtsProgress(projectId.value)
         ttsProgress.value = { done: prog.done, total: prog.total }
+        // 每多完成一段就刷新一次分段列表,让已完成的分段边生成边展示/试听
+        if (prog.done > 0 && prog.done !== lastFetchedDone) {
+          lastFetchedDone = prog.done
+          fetchChunks()
+        }
       } catch { /* 进度接口失败不影响主轮询 */ }
 
       const { data: steps } = await pipelineApi.getStatus(projectId.value)
@@ -616,10 +622,10 @@ async function handleConcatenate() {
         <audio controls style="width: 100%;" :src="audioSrc" :key="cacheBuster"></audio>
       </div>
     </el-card>
-    <el-empty v-else description="暂无音频，请先生成口播稿后生成 TTS 语音" />
+    <el-empty v-else-if="!loading" description="暂无音频，请先生成口播稿后生成 TTS 语音" />
 
-    <!-- 分段列表 -->
-    <el-card v-if="chunksLoaded && chunks.length > 1" style="margin-top: 16px;">
+    <!-- 分段列表:合成中也显示(loading 时放宽单段限制),已完成的分段逐个出现 -->
+    <el-card v-if="chunksLoaded && (chunks.length > 1 || (loading && chunks.length > 0))" style="margin-top: 16px;">
       <template #header>
         <div style="display: flex; justify-content: space-between; align-items: center;">
           <span style="font-weight: 500;">分段管理 ({{ chunks.length }} 段)</span>

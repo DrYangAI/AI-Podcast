@@ -190,7 +190,11 @@ class TTSProvider(BaseProvider):
     def _save_chunks_json(chunks_dir: Path, chunks: list[dict],
                           voice_id: str, use_icl: bool,
                           voice_display: str = ""):
-        """Write chunks.json metadata to the chunks directory."""
+        """Write chunks.json metadata to the chunks directory.
+
+        生成期间会被增量重写、同时被前端轮询读取,所以先写临时文件再原子替换,
+        避免读到写了一半的 JSON。
+        """
         meta = {
             "chunks": chunks,
             "voice_id": voice_id,
@@ -198,9 +202,11 @@ class TTSProvider(BaseProvider):
             "use_icl": use_icl,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
-        (chunks_dir / "chunks.json").write_text(
-            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        payload = json.dumps(meta, ensure_ascii=False, indent=2)
+        target = chunks_dir / "chunks.json"
+        tmp = chunks_dir / "chunks.json.tmp"
+        tmp.write_text(payload, encoding="utf-8")
+        tmp.replace(target)
 
     @staticmethod
     def load_chunks_json(chunks_dir: Path) -> dict | None:

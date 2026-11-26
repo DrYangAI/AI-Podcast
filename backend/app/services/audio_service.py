@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+import shutil
 from pathlib import Path
 
 from sqlalchemy import select
@@ -465,6 +466,35 @@ class AudioService:
                 segment_audio_paths = []
                 total_duration = 0.0
 
+                # chunks.json 边合成边增量落盘:每完成一段就追加一条记录并写盘,
+                # 这样前端轮询时能实时展示/试听已完成的分段,不用等全部合成完。
+                chunks_dir = output_dir / "chunks"
+                chunks_dir.mkdir(parents=True, exist_ok=True)
+                chunk_entries: list[dict] = []
+                chunk_idx = 0
+
+                def _append_chunk(audio_path: Path, text: str, duration: float,
+                                  chunk_type: str | None = None) -> None:
+                    nonlocal chunk_idx
+                    chunk_file = f"chunk_{chunk_idx:03d}.mp3"
+                    shutil.copy2(audio_path, chunks_dir / chunk_file)
+                    entry = {
+                        "index": chunk_idx,
+                        "text": text,
+                        "file": chunk_file,
+                        "duration": duration,
+                        "speed": len(text) / duration if duration else 0.0,
+                        "chars": len(text),
+                    }
+                    if chunk_type:
+                        entry["type"] = chunk_type
+                    chunk_entries.append(entry)
+                    chunk_idx += 1
+                    TTSProvider._save_chunks_json(
+                        chunks_dir, chunk_entries, voice_id, use_icl,
+                        voice_display=voice_display or voice_id,
+                    )
+
                 # Synthesize intro if configured
                 intro_audio_path = None
                 intro_duration = 0.0
@@ -486,6 +516,7 @@ class AudioService:
                         intro_audio_path = intro_output
                         intro_duration = intro_response.duration
                         total_duration += intro_duration
+                        _append_chunk(intro_output, intro_clean, intro_duration, "intro")
                         logger.info("Intro done: %.1fs", intro_duration)
 
                 for seg in segments:
@@ -503,6 +534,7 @@ class AudioService:
                         seg.duration_hint = silent_seconds
                         total_duration += silent_seconds
                         segment_audio_paths.append(seg_output)
+                        _append_chunk(seg_output, "", silent_seconds)
                         logger.info("Segment %d empty note: %.1fs silence",
                                     seg.segment_order, silent_seconds)
                         continue
@@ -520,6 +552,7 @@ class AudioService:
                     seg.duration_hint = seg_response.duration
                     total_duration += seg_response.duration
                     segment_audio_paths.append(seg_output)
+                    _append_chunk(seg_output, seg_text, seg_response.duration)
                     logger.info("Segment %d done: %.1fs", seg.segment_order, seg_response.duration)
 
                 # Synthesize outro if configured
@@ -543,6 +576,7 @@ class AudioService:
                         outro_audio_path = outro_output
                         outro_duration = outro_response.duration
                         total_duration += outro_duration
+                        _append_chunk(outro_output, outro_clean, outro_duration, "outro")
                         logger.info("Outro done: %.1fs", outro_duration)
 
                 # Build final audio path list: intro + segments + outro
@@ -559,70 +593,10 @@ class AudioService:
                         all_audio_paths, output_path
                     )
                 elif all_audio_paths:
-                    import shutil
                     shutil.copy2(all_audio_paths[0], output_path)
 
-                # Write chunks.json for chunk management UI compatibility
-                chunks_dir = output_dir / "chunks"
-                chunks_dir.mkdir(parents=True, exist_ok=True)
-                chunk_entries = []
-                chunk_idx = 0
-
-                # Intro chunk
-                if intro_audio_path and intro_text_val:
-                    intro_clean = clean_script_for_tts(intro_text_val)
-                    chunk_file = f"chunk_{chunk_idx:03d}.mp3"
-                    import shutil as _shutil
-                    _shutil.copy2(intro_audio_path, chunks_dir / chunk_file)
-                    chunk_entries.append({
-                        "index": chunk_idx,
-                        "text": intro_clean,
-                        "file": chunk_file,
-                        "duration": intro_duration,
-                        "speed": len(intro_clean) / intro_duration if intro_duration else 0.0,
-                        "chars": len(intro_clean),
-                        "type": "intro",
-                    })
-                    chunk_idx += 1
-
-                # Include every segment that produced audio (silent slides too).
-                active_segments = [s for s in segments if s.audio_file]
-                for seg in active_segments:
-                    chunk_file = f"chunk_{chunk_idx:03d}.mp3"
-                    seg_audio = Path(seg.audio_file) if seg.audio_file else None
-                    if seg_audio and seg_audio.exists():
-                        import shutil as _shutil
-                        _shutil.copy2(seg_audio, chunks_dir / chunk_file)
-                    seg_clean = clean_script_for_tts(seg.script_text or "")
-                    chunk_entries.append({
-                        "index": chunk_idx,
-                        "text": seg_clean,
-                        "file": chunk_file,
-                        "duration": seg.duration_hint or 0.0,
-                        "speed": len(seg_clean) / seg.duration_hint if seg.duration_hint else 0.0,
-                        "chars": len(seg_clean),
-                    })
-                    chunk_idx += 1
-
-                # Outro chunk
-                if outro_audio_path and outro_text_val:
-                    outro_clean = clean_script_for_tts(outro_text_val)
-                    chunk_file = f"chunk_{chunk_idx:03d}.mp3"
-                    import shutil as _shutil
-                    _shutil.copy2(outro_audio_path, chunks_dir / chunk_file)
-                    chunk_entries.append({
-                        "index": chunk_idx,
-                        "text": outro_clean,
-                        "file": chunk_file,
-                        "duration": outro_duration,
-                        "speed": len(outro_clean) / outro_duration if outro_duration else 0.0,
-                        "chars": len(outro_clean),
-                        "type": "outro",
-                    })
-                    chunk_idx += 1
-                TTSProvider._save_chunks_json(chunks_dir, chunk_entries, voice_id, use_icl,
-                                              voice_display=voice_display or voice_id)
-                logger.info("Wrote chunks.json with %d segment-based chunks", len(chunk_entries))
+                # chunks.json 已在上面逐段增量写好,这里只补一条汇总日志
+                logger.info("chunks.json: %d segment-based chunks", len(chunk_entries))
 
                 sample_rate = 24000  # default
                 logger.info("Per-segment TTS complete: %d segments, total %.1fs",
