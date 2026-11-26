@@ -90,6 +90,11 @@ const router = createRouter({
       name: 'prompt-templates',
       component: () => import('../views/PromptTemplatesView.vue'),
     },
+    {
+      path: '/usage',
+      name: 'usage',
+      component: () => import('../views/UsageView.vue'),
+    },
   ],
 })
 

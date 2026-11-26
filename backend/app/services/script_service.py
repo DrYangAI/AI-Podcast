@@ -11,6 +11,7 @@ from ..providers.base import ProviderType
 from ..providers.registry import ProviderRegistry
 from ..providers.text.base import TextProvider
 from ..config import get_settings
+from .usage_service import record_text_usage
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,14 @@ class ScriptService:
                 db.add(script)
 
             await db.commit()
+
+            # 费用记账:口播稿生成的 token 用量
+            if provider_config and getattr(response, "token_usage", None):
+                await record_text_usage(
+                    project_id=project_id, provider_key=provider_config.provider_key,
+                    model_id=response.model_used or (provider_config.model_id or ""),
+                    token_usage=response.token_usage, label="口播稿生成",
+                )
             return script
 
     async def regenerate_segment_script(self, project_id: str, segment_id: str,

@@ -14,6 +14,7 @@ from .voice_clone import VoiceClone
 from .publish_asset import PublishAsset
 from .prompt_template import PromptTemplate, PromptTemplateHistory
 from .global_setting import GlobalSetting
+from .usage_record import UsageRecord
 
 __all__ = [
     "Project",
@@ -32,4 +33,5 @@ __all__ = [
     "PromptTemplate",
     "PromptTemplateHistory",
     "GlobalSetting",
+    "UsageRecord",
 ]

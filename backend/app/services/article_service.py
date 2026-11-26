@@ -11,6 +11,7 @@ from ..models import Project, Article, ProviderConfig
 from ..providers.base import ProviderType
 from ..providers.registry import ProviderRegistry
 from ..config import get_settings
+from .usage_service import record_text_usage
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,14 @@ class ArticleService:
                 db.add(article)
 
             await db.commit()
+
+            # 费用记账:文章生成的 token 用量(独立 session)
+            if provider_config and response.token_usage:
+                await record_text_usage(
+                    project_id=project_id, provider_key=provider_config.provider_key,
+                    model_id=response.model_used or (provider_config.model_id or ""),
+                    token_usage=response.token_usage, label="文章生成",
+                )
             return article
 
     async def _get_provider(self, db: AsyncSession, provider_type: str,

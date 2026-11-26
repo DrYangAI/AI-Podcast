@@ -16,6 +16,7 @@ from ..providers.registry import ProviderRegistry
 from ..providers.tts.base import TTSProvider
 from ..config import get_settings
 from ..utils.ppt_importer import DEFAULT_SILENT_SLIDE_SECONDS
+from .usage_service import record_usage
 
 logger = logging.getLogger(__name__)
 
@@ -459,6 +460,7 @@ class AudioService:
             # PPT-imported projects use the per-segment path even when some slides
             # have empty notes (those become silent still-frames below).
             has_segment_scripts = uses_per_segment_tts(project, segments)
+            tts_chars = 0  # 累计合成字数,用于费用记账(按万字计价)
 
             if has_segment_scripts:
                 # === New path: per-segment TTS synthesis ===
@@ -475,7 +477,8 @@ class AudioService:
 
                 def _append_chunk(audio_path: Path, text: str, duration: float,
                                   chunk_type: str | None = None) -> None:
-                    nonlocal chunk_idx
+                    nonlocal chunk_idx, tts_chars
+                    tts_chars += len(text)  # 静音段 text="" 不计
                     chunk_file = f"chunk_{chunk_idx:03d}.mp3"
                     shutil.copy2(audio_path, chunks_dir / chunk_file)
                     entry = {
@@ -617,6 +620,17 @@ class AudioService:
                 )
                 total_duration = response.duration
                 sample_rate = response.sample_rate
+                tts_chars += len(clean_text)
+
+            # 费用记账:TTS 合成字数(本地 VoxCPM 价格为 0,仍记用量)
+            if tts_chars > 0:
+                _cfg = locals().get("provider_cfg")
+                await record_usage(
+                    project_id=project_id, provider_type="tts",
+                    provider_key=provider_key_used,
+                    model_id=(_cfg.model_id if _cfg else "") or "",
+                    unit="char", quantity=tts_chars, label="语音合成",
+                )
 
             # Save or update audio asset
             result = await db.execute(select(AudioAsset).where(AudioAsset.project_id == project_id))

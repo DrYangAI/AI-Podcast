@@ -37,6 +37,10 @@
           <el-icon><EditPen /></el-icon>
           <span>提示词模板</span>
         </el-menu-item>
+        <el-menu-item index="/usage">
+          <el-icon><Wallet /></el-icon>
+          <span>费用</span>
+        </el-menu-item>
       </el-menu>
     </el-aside>
     <el-container>
