@@ -149,9 +149,11 @@ function wrapCjk(text: string, maxChars: number, maxLines: number): string[] {
     if (cur) chunks.push(cur)
     const fixed: string[] = []
     for (let ln of chunks) {
-      while (ln && LEADING_PUNCT.includes(ln[0]) && fixed.length) {
-        fixed[fixed.length - 1] += ln[0]
+      let first = ln[0]
+      while (ln && first !== undefined && LEADING_PUNCT.includes(first) && fixed.length) {
+        fixed[fixed.length - 1] = (fixed[fixed.length - 1] ?? '') + first
         ln = ln.slice(1)
+        first = ln[0]
       }
       if (ln) fixed.push(ln)
     }
@@ -160,9 +162,10 @@ function wrapCjk(text: string, maxChars: number, maxLines: number): string[] {
   let out = lines.length ? lines : [text.trim()]
   if (out.length > maxLines) {
     out = out.slice(0, maxLines)
+    const last = out[maxLines - 1] ?? ''
     out[maxLines - 1] = maxChars > 0
-      ? out[maxLines - 1].slice(0, Math.max(1, maxChars - 1)) + '…'
-      : out[maxLines - 1] + '…'
+      ? last.slice(0, Math.max(1, maxChars - 1)) + '…'
+      : last + '…'
   }
   return out
 }
@@ -285,7 +288,7 @@ const previewStyles = computed(() => {
       // 再按宽度自然折);矩形/无底条走 drawtext,已在 previewTitleDisplay 里按字号
       // 显式折好,用 pre 只按给定换行渲染、不再按宽度二次折,和成片"照给定行渲染、
       // 超宽才裁"一致
-      whiteSpace: (ps.portrait_title_bg_enabled && isParallelogram ? 'pre-wrap' : 'pre') as const,
+      whiteSpace: (ps.portrait_title_bg_enabled && isParallelogram ? 'pre-wrap' : 'pre') as 'pre-wrap' | 'pre',
       overflow: 'hidden',
     },
     subTitle: {
